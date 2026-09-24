@@ -1,0 +1,33 @@
+# How a containerised project joins nginx-edge permanently.
+# Lives in the PROJECT's own repo, not in nginx-edge.
+#
+#   edge app link /path/to/shop          # apps/shop/compose.yaml → this file
+#   edge site add shop.example.com --app shop/web:3000
+#
+# Without the `edge` network block below, `edge site add` offers to attach the
+# service with apps/shop/edge.override.yaml instead — then start it with
+# `edge app up shop`.
+
+services:
+  web:
+    build: .
+    restart: unless-stopped
+    # No `ports:` — nothing is published on the host. nginx reaches it over the edge network.
+    expose:
+      - "3000"
+    networks:
+      default:
+      edge:
+        # Unique name on the shared network. Service names like "web" or "api"
+        # collide between projects; edge uses this alias as the upstream.
+        aliases: [shop-web]
+
+  db:
+    image: postgres:17-alpine
+    # Only on the project's private network — nginx (and other projects) can't see it.
+    networks: [default]
+
+networks:
+  edge:
+    name: edge         # EDGE_NETWORK in nginx-edge/.env (e.g. proxy)
+    external: true
