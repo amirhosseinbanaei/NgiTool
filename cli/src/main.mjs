@@ -10,7 +10,8 @@ import * as certs from './certs.mjs';
 import * as cf from './cloudflare.mjs';
 import * as apps from './apps.mjs';
 import * as flows from './flows.mjs';
-import { UsageError, describeSource, CERT_TYPES } from './targets.mjs';
+import * as remove from './remove.mjs';
+import { UsageError, describeSource, parseTarget } from './targets.mjs';
 import { select, confirm, canPrompt, Cancelled } from './prompt.mjs';
 import { c, log, sym, setColor, task, heading, table, daysLeft, shorten } from './ui.mjs';
 
@@ -24,6 +25,12 @@ export class ExitError extends Error {
 }
 
 export async function main(argv) {
+  // certbot's own flags go through untouched: edge certbot certonly --staging …
+  const first = argv.findIndex((a) => !a.startsWith('-'));
+  if (argv[first] === 'certbot') {
+    if (argv.slice(0, first).includes('--no-color')) setColor(false);
+    return certbotRun(argv.slice(first + 1));
+  }
   let opts;
   try {
     opts = parseArgs(argv);
@@ -83,22 +90,32 @@ async function dispatch([cmd, ...rest], opts) {
     case 'domains':
       if (!sub || sub === 'ls') return printDomains();
       if (sub === 'add') return flows.flowDomain(opts, args[0]);
-      if (sub === 'rm' || sub === 'remove') return removeDomain(opts, args[0]);
+      if (sub === 'rm' || sub === 'remove') return removeOne(opts, 'domain', args[0]);
       break;
     case 'site':
     case 'sub':
     case 'subdomain':
       if (sub === 'add') return flows.flowSite(opts, args[0]);
+      if (sub === 'rm' || sub === 'remove') return removeOne(opts, 'site', args[0] && parseTarget(args[0]).host);
       if (!sub || sub === 'ls') return printRoutes(loadState(), await liveness());
       break;
     case 'path':
       if (sub === 'add') return flows.flowPath(opts, args[0]);
+      if (sub === 'rm' || sub === 'remove') return removeOne(opts, 'path', args[0] && parseTarget(args[0]).key);
       if (!sub || sub === 'ls') return printRoutes(loadState(), await liveness());
       break;
     case 'rm':
     case 'remove':
-      if (!sub) throw new UsageError('usage: edge rm <host>[/<path>]');
-      return flows.removeRoute(opts, sub);
+    case 'delete':
+      if (!sub) return remove.pickAndRemove(opts);
+      return remove.flowRemove(opts, remove.routeTarget(sub));
+    case 'www':
+    case 'static':
+      if (!sub || sub === 'ls') return printWww();
+      if (sub === 'rm' || sub === 'remove') return removeOne(opts, 'www', args[0] && args[0].replace(/^www\//, '').replace(/\/+$/, ''));
+      break;
+    case 'reset':
+      return remove.flowRemove(opts, { kind: 'all', key: '' });
     case 'enable':
     case 'disable':
       if (!sub) throw new UsageError(`usage: edge ${cmd} <host>[/<path>]`);
@@ -112,8 +129,8 @@ async function dispatch([cmd, ...rest], opts) {
     case 'certs':
       if (!sub || sub === 'ls') return printCerts(loadState());
       if (sub === 'add') return flows.flowCertAdd(opts, args[0]);
-      if (sub === 'rm' || sub === 'remove') return flows.flowCertRemove(opts, args[0]);
-      if (sub === 'renew') return renew();
+      if (sub === 'rm' || sub === 'remove') return removeOne(opts, 'cert', args[0]);
+      if (sub === 'renew') return renew(args[0], opts);
       if (sub === 'aop') {
         if (!args[0] || !['on', 'off'].includes(args[1])) throw new UsageError('usage: edge cert aop <name> on|off');
         return flows.flowCertAop(args[0], args[1] === 'on');
@@ -220,7 +237,7 @@ function printCerts(state) {
     return [
       mark,
       c.bold(k.name),
-      CERT_TYPES[k.type] || k.type,
+      certs.certLabel(k),
       k.problem ? c.red(k.problem) : daysLeft(k.info.validTo),
       c.gray(k.names.join(', ') + (k.aop ? ' · AOP on' : '')),
     ];
@@ -235,11 +252,23 @@ function printDomains() {
   heading('Domains');
   const rows = Object.entries(state.domains).map(([d, v]) => [
     c.bold(d),
-    c.gray(`cert ${v.cert}`),
+    v.cert ? c.gray(`cert ${v.cert}`) : c.yellow('no cert'),
     v.zone ? c.gray(`zone ${v.zone.id.slice(0, 8)}…`) : c.yellow('not in Cloudflare'),
     state.sites[d] ? describeSource(state.sites[d].source) : c.gray('apex not served'),
   ]);
   console.log(rows.length ? table(rows).join('\n') : c.gray('    none yet — edge domain add example.com'));
+  console.log('');
+  return 0;
+}
+
+function printWww() {
+  const dirs = remove.wwwDirs();
+  heading('Static folders', `${shorten(P.www)}/`);
+  if (!dirs.length) {
+    log.hint('none yet — they are made by edge domain add or a route with --static');
+    return 0;
+  }
+  console.log(table(dirs.map((w) => [c.bold(`www/${w.dir}`), w.routes.length ? `${c.gray('served at')} ${w.routes.join(', ')}` : c.gray('not served')]), { indent: 2 }).join('\n'));
   console.log('');
   return 0;
 }
@@ -282,7 +311,7 @@ async function status() {
   );
   const token = readToken();
   const notes = [];
-  if (!token) notes.push('no Cloudflare token (certbot, DNS records off)');
+  if (!token) notes.push("no Cloudflare token (DNS records, Let's Encrypt DNS-01 off)");
   if (!env.SERVER_IP) notes.push('SERVER_IP not set (DNS records off)');
   if (!env.ACME_EMAIL) notes.push('ACME_EMAIL not set');
   if (notes.length) console.log(`    ${c.yellow(sym.warn)} ${c.yellow(notes.join(' · '))}`);
@@ -313,8 +342,8 @@ async function appCommand(sub, args, opts) {
       return 0;
     case 'unlink':
     case 'rm':
-      await flows.flowAppUnlink(opts, args[0]);
-      return 0;
+    case 'remove':
+      return removeOne(opts, 'app', args[0]);
     case 'up':
     case 'down':
     case 'restart':
@@ -356,6 +385,7 @@ async function stackUp() {
   const env = readEnv();
   if (!(await networkInfo(env.EDGE_NETWORK))) throw new UsageError(`network ${env.EDGE_NETWORK} does not exist — run \`edge init\``);
   if (!fs.existsSync(P.cfIni)) writeToken(null); // certbot mounts it; must be a file, not a dir Docker invents
+  fs.mkdirSync(P.acme, { recursive: true }); // likewise, or Docker creates it owned by root
   await commit(loadState(), { quiet: true });
   return stackRun(['up', '-d', '--quiet-pull', '--remove-orphans'], 'Starting nginx and certbot');
 }
@@ -387,15 +417,26 @@ async function reload() {
   return 0;
 }
 
-async function renew() {
-  const res = await task("Renewing Let's Encrypt certificates that are due", () => certs.renewLetsEncrypt());
-  const summary = res.stdout.split('\n').filter((l) => /renew|skipped|success|fail|not due/i.test(l));
+async function renew(name, opts = {}) {
+  const state = loadState();
+  if (name && state.certs[name]?.type !== 'letsencrypt') throw new UsageError(`${name} is not a Let's Encrypt certificate — see \`edge cert ls\``);
+  const what = name ? `${name}${opts.force ? ' (forced)' : ''}` : opts.force ? "every Let's Encrypt certificate (forced)" : "Let's Encrypt certificates that are due";
+  const res = await task(`Renewing ${what}`, () => certs.renewLetsEncrypt({ name, force: opts.force }));
+  const summary = `${res.stdout}\n${res.stderr}`.split('\n').filter((l) => /renew|skipped|success|fail|not due|error/i.test(l));
   for (const l of summary.slice(-10)) log.hint(l.trim());
   if (res.code !== 0) {
     console.error(c.red(res.stderr.trim().split('\n').slice(-8).join('\n')));
     return 1;
   }
   return reload();
+}
+
+/** `edge certbot <args…>`: certbot in the stack's certbot container, on this terminal. */
+async function certbotRun(args) {
+  if (!args.length) args = ['certificates'];
+  log.step(c.gray(`certbot ${args.join(' ')}`));
+  const res = await certs.certbot(args, { inherit: true });
+  return res.code;
 }
 
 function logs(host) {
@@ -452,24 +493,9 @@ async function install() {
   return 0;
 }
 
-async function removeDomain(opts, domain) {
-  const state = loadState();
-  if (!domain) {
-    if (!canPrompt()) throw new UsageError('usage: edge domain rm <domain>');
-    domain = await select({ message: 'Remove which domain?', choices: Object.keys(state.domains).map((d) => ({ value: d, label: d })) });
-  }
-  if (!state.domains[domain]) throw new UsageError(`${domain} is not set up`);
-  const hosts = Object.keys(state.sites).filter((h) => h === domain || h.endsWith(`.${domain}`));
-  if (hosts.filter((h) => h !== domain).length) {
-    throw new UsageError(`remove its hosts first: ${hosts.filter((h) => h !== domain).join(', ')}`);
-  }
-  if (!opts.yes && canPrompt() && !(await confirm({ message: `Remove ${domain}? (its certificate is kept — edge cert rm to delete it)`, initial: false }))) return 1;
-  if (state.sites[domain]) await flows.removeRoute({ ...opts, force: true }, domain);
-  const next = loadState();
-  delete next.domains[domain];
-  await commit(next, { quiet: true });
-  log.ok(`${domain} removed`);
-  return 0;
+/** `edge <kind> rm [key]`: the named one, or pick it. */
+function removeOne(opts, kind, key) {
+  return key ? remove.flowRemove(opts, { kind, key }) : remove.pickAndRemove(opts, kind);
 }
 
 // ═══════════════════════════════════════════════════════════════ menu ═════
@@ -501,10 +527,12 @@ async function menu(opts) {
           { value: 'link', label: 'Link an app', hint: 'symlink a project’s docker compose into apps/' },
           { separator: 'manage' },
           { value: 'status', label: 'Status', hint: 'stack, certificates, routes, apps' },
+          { value: 'domains', label: 'Domains', hint: 'list, add, remove' },
           { value: 'routes', label: 'Routes', hint: 'enable, disable, replace, remove' },
-          { value: 'apps', label: 'Apps', hint: 'start, stop, logs, scan, unlink' },
-          { value: 'certs', label: 'Certificates', hint: 'list, add, renew, remove' },
+          { value: 'apps', label: 'Apps', hint: 'start, stop, logs, scan, remove' },
+          { value: 'certs', label: 'Certificates', hint: "Let's Encrypt (certbot), renew, remove" },
           { value: 'stack', label: 'Stack', hint: nginxUp ? 'reload, restart, stop, logs' : 'start nginx-edge' },
+          { value: 'remove', label: 'Remove…', hint: 'a domain, host, path, app, certificate, static folder — or everything' },
           { value: 'quit', label: 'Quit' },
         ],
       });
@@ -520,7 +548,9 @@ async function menu(opts) {
       else if (choice === 'domain') await flows.flowDomain(opts);
       else if (choice === 'link') await flows.flowAppLink(opts);
       else if (choice === 'status') await status();
+      else if (choice === 'domains') await domainsMenu(opts);
       else if (choice === 'routes') await routesMenu(opts);
+      else if (choice === 'remove') await remove.pickAndRemove(opts);
       else if (choice === 'apps') await appsMenu(opts);
       else if (choice === 'certs') await certsMenu(opts);
       else if (choice === 'stack') await stackMenu(nginxUp);
@@ -558,10 +588,7 @@ async function routesMenu(opts) {
     ],
   });
   if (action === 'enable' || action === 'disable') return flows.toggleRoute(key, action === 'enable');
-  if (action === 'remove') {
-    if (!(await confirm({ message: `Remove ${key}?`, initial: false }))) return;
-    return flows.removeRoute(opts, key);
-  }
+  if (action === 'remove') return remove.flowRemove(opts, { kind: r.kind, key });
   const force = { ...opts, force: true };
   if (r.kind === 'site') return flows.flowSite({ ...force, cert: r.cert, dns: r.dns }, key);
   return flows.flowPath(force, key);
@@ -595,29 +622,51 @@ async function appsMenu(opts) {
       { value: 'down', label: 'Stop', hint: 'docker compose down' },
       { value: 'ps', label: 'Containers', hint: 'docker compose ps' },
       { value: 'logs', label: 'Follow logs', hint: 'Ctrl-C to stop' },
-      { value: 'unlink', label: 'Unlink from apps/', hint: 'the project itself is untouched' },
+      { value: 'remove', label: 'Remove', hint: 'unlink from apps/ with its routes — the project itself is untouched' },
     ],
   });
-  if (action === 'unlink') return flows.flowAppUnlink(opts, name);
+  if (action === 'remove') return remove.flowRemove(opts, { kind: 'app', key: name });
   if (action === 'down' && !(await confirm({ message: `Stop every container of ${name}?`, initial: false }))) return;
   return appRun(action, name, []);
 }
 
+async function domainsMenu(opts) {
+  printDomains();
+  const has = Object.keys(loadState().domains).length > 0;
+  const action = await select({
+    message: 'Domains',
+    choices: [
+      { value: 'add', label: 'Add a domain', hint: 'certificate + DNS for a new domain' },
+      { value: 'rm', label: 'Remove a domain', hint: 'with its hosts, paths, certificate and DNS records', disabled: !has && 'none yet' },
+    ],
+  });
+  if (action === 'add') return flows.flowDomain(opts);
+  return remove.pickAndRemove(opts, 'domain');
+}
+
 async function certsMenu(opts) {
   printCerts(loadState());
+  const state = loadState();
+  const le = Object.entries(state.certs).filter(([, k]) => k.type === 'letsencrypt');
   const action = await select({
     message: 'Certificates',
     choices: [
-      { value: 'add', label: 'Add a certificate', hint: "Let's Encrypt, Cloudflare Origin CA, custom or self-signed" },
+      { value: 'add', label: 'Add a certificate', hint: "Let's Encrypt (HTTP or DNS challenge), Cloudflare Origin CA, custom or self-signed" },
       { value: 'renew', label: 'Renew now', hint: "Let's Encrypt certificates that are due (certbot also does this every 12h)" },
-      { value: 'aop', label: 'Authenticated Origin Pulls', hint: 'accept HTTPS only from Cloudflare' },
-      { value: 'rm', label: 'Remove a certificate' },
+      { value: 'force', label: 'Force-renew one', hint: 'renew a Let’s Encrypt certificate even if it is not due', disabled: !le.length && "no Let's Encrypt certificates" },
+      { value: 'certbot', label: "certbot's view", hint: 'certbot certificates — what certbot has on disk' },
+      { value: 'aop', label: 'Authenticated Origin Pulls', hint: 'accept HTTPS only from Cloudflare', disabled: !Object.keys(state.certs).length && 'no certificates' },
+      { value: 'rm', label: 'Remove a certificate', hint: 'switch or remove the hosts using it', disabled: !Object.keys(state.certs).length && 'no certificates' },
     ],
   });
   if (action === 'add') return flows.flowCertAdd(opts);
   if (action === 'renew') return renew();
-  if (action === 'rm') return flows.flowCertRemove(opts);
-  const state = loadState();
+  if (action === 'certbot') return certbotRun(['certificates']);
+  if (action === 'rm') return remove.pickAndRemove(opts, 'cert');
+  if (action === 'force') {
+    const name = await select({ message: 'Renew which certificate?', choices: le.map(([n, k]) => ({ value: n, label: n, hint: `${certs.certLabel(k)} · ${k.names.join(', ')}` })) });
+    return renew(name, { force: true });
+  }
   const name = await select({
     message: 'For which certificate?',
     choices: Object.entries(state.certs).map(([n, k]) => ({ value: n, label: n, hint: `${k.aop ? 'on' : 'off'} · ${k.names.join(', ')}` })),

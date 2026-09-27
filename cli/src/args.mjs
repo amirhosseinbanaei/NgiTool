@@ -1,11 +1,11 @@
 import { c } from './ui.mjs';
 
 const BOOLEAN = new Set([
-  'yes', 'force', 'help', 'version', 'no-color', 'strip', 'all', 'purge-dns', 'no-token', 'wildcard',
+  'yes', 'force', 'help', 'version', 'no-color', 'strip', 'all', 'purge', 'purge-dns', 'no-token', 'wildcard',
 ]);
 const VALUE = new Set([
   'app', 'container', 'port', 'static', 'cert', 'dns', 'cert-file', 'key-file', 'name', 'email',
-  'network', 'subnet', 'token', 'server-ip', 'apex', 'attach', 'tail',
+  'network', 'subnet', 'token', 'server-ip', 'apex', 'attach', 'tail', 'challenge',
 ]);
 const ALIAS = { y: 'yes', f: 'force', h: 'help', v: 'version' };
 
@@ -64,11 +64,11 @@ ${b('SETUP')}
 
 ${b('SERVE A PROJECT')}
   edge domain add [example.com]          certificate (+ apex site, DNS) for a new domain
-  edge domain ls | rm <domain>
+  edge domain ls
   edge site add [api.example.com]        subdomain → project; asks for DNS mode and certificate
   edge path add [example.com/admin]      path on an existing host → project
   edge ls                                everything that is served
-  edge enable | disable | rm <target>    target = host or host/path
+  edge enable | disable <target>         target = host or host/path
 
   Where traffic goes ${g('(asked interactively when not given)')}:
     --app NAME/SERVICE[:PORT]            a service of a project in apps/
@@ -77,6 +77,7 @@ ${b('SERVE A PROJECT')}
     --static DIR                         files in www/DIR
   --dns proxied|dns-only|skip            Cloudflare record for the host
   --cert auto|NAME|letsencrypt|origin|custom|self-signed
+         --challenge http|dns            for --cert letsencrypt (default: dns with Cloudflare, else http)
          --cert-file F --key-file F      for --cert custom
   --strip | --no-strip                   path routes: remove the prefix before proxying
   --attach override|manual               service not on the nginx network yet
@@ -85,15 +86,28 @@ ${b('APPS')}  ${g('apps/<name>/ holds a symlink to each project’s compose file
   edge app ls
   edge app link [dir|compose-file]       --name NAME
   edge app scan [dir…]                   find compose projects (default /home/*) and pick
-  edge app unlink <name>
   edge app up|down|restart|ps|logs|pull|build <name> [service…]
 
 ${b('CERTIFICATES')}
   edge cert ls
   edge cert add [host,*.host]            --cert letsencrypt|origin|custom|self-signed
-  edge cert renew                        renew due Let's Encrypt certs now, then reload
-  edge cert rm <name>
+                                         Let's Encrypt: --challenge http (port 80, no Cloudflare)
+                                                        --challenge dns  (Cloudflare, wildcards)
+  edge cert renew [name] [--force]       renew due (or --force: now) Let's Encrypt certs, then reload
   edge cert aop <name> on|off            Authenticated Origin Pulls (Cloudflare-only access)
+  edge certbot [args…]                   run certbot in its container (default: certificates)
+
+${b('REMOVE')}  ${g('shows what goes with it, then asks')}
+  edge rm                                pick what to remove
+  edge rm <host>[/<path>]                a host (with its paths) or one path
+  edge domain rm <domain>                with its hosts, paths, and (asked) certificate + DNS
+  edge app rm <name>                     unlink from apps/ with its routes (project untouched)
+  edge cert rm <name>                    --cert OTHER moves its hosts; --force removes them
+  edge www ls | rm <dir>                 static folders in www/ (with the routes serving them)
+  edge reset                             remove every route, domain, certificate and app link
+  --force        also remove routes that depend on it (off a terminal)
+  --purge        also delete what is left unused: certificates, www folders, DNS records,
+                 app containers (docker compose down)      --purge-dns   DNS records only
 
 ${b('STACK')}
   edge up | down | restart               nginx + certbot

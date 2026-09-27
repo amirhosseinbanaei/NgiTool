@@ -256,7 +256,7 @@ async function staticSource(target) {
 
 // ═══════════════════════════════════════════════════════ DNS & certs ═════
 
-async function zoneFor(state, host, token) {
+export async function zoneFor(state, host, token) {
   const domain = domainOf(host, Object.keys(state.domains));
   if (domain && state.domains[domain].zone) return state.domains[domain].zone;
   if (!token) return null;
@@ -300,12 +300,14 @@ async function applyDns(host, mode, zone, token) {
 
 /**
  * Which certificate a host uses. Returns { use: name } for an existing one, or
- * { create: type, name, names } for a new one.
+ * { create: type, challenge?, name, names } for a new one.
  */
 async function pickCert(opts, state, { host, dns, zone, token, domainWide = false }) {
   const covering = certs.certsFor(state, host);
   const wildcardNames = [host, `*.${host}`];
   const kinds = ['letsencrypt', 'origin', 'custom', 'self-signed'];
+  // HTTP-01 can't do wildcards: a domain gets its apex + www instead
+  const httpNames = domainWide ? [host, `www.${host}`] : [host];
 
   if (opts.cert) {
     if (state.certs[opts.cert]) return { use: opts.cert };
@@ -314,8 +316,17 @@ async function pickCert(opts, state, { host, dns, zone, token, domainWide = fals
       throw new UsageError(`no certificate covers ${host} yet`);
     }
     if (!kinds.includes(opts.cert)) throw new UsageError(`--cert must be an existing certificate or one of: auto, ${kinds.join(', ')}`);
+    const name = certs.freeCertName(state, host);
+    if (opts.cert === 'letsencrypt') {
+      const challenge = pickChallenge(opts, { token, zone });
+      if (challenge === 'http') {
+        if (opts.wildcard) throw new UsageError('--wildcard needs --challenge dns: HTTP-01 cannot issue wildcards');
+        return { create: 'letsencrypt', challenge, name, names: httpNames };
+      }
+      return { create: 'letsencrypt', challenge, name, names: domainWide || opts.wildcard ? wildcardNames : [host] };
+    }
     const names = domainWide || opts.wildcard ? wildcardNames : [host];
-    return { create: opts.cert, name: certs.freeCertName(state, host), names };
+    return { create: opts.cert, name, names };
   }
   if (!canPrompt()) {
     if (covering[0]) return { use: covering[0].name };
@@ -328,13 +339,23 @@ async function pickCert(opts, state, { host, dns, zone, token, domainWide = fals
     value: `use:${k.name}`,
     label: `Use ${k.name}`,
     answer: k.name,
-    hint: `${CERT_TYPES[k.type] || k.type} · ${k.names.join(', ')} · ${strip(daysLeft(k.info?.validTo))}`,
+    hint: `${certs.certLabel(k)} · ${k.names.join(', ')} · ${strip(daysLeft(k.info?.validTo))}`,
   }));
   if (choices.length) choices.push({ separator: `or create a new certificate for ${host}` });
   choices.push(
-    domainWide
-      ? { value: 'letsencrypt', label: "Let's Encrypt wildcard", hint: `${host} + *.${host} via certbot — free, renews itself (recommended)`, disabled: noToken || noZone }
-      : { value: 'letsencrypt', label: "Let's Encrypt", hint: `${host} via certbot + Cloudflare DNS — free, renews itself`, disabled: noToken || noZone },
+    {
+      value: 'le:http',
+      label: "Let's Encrypt · HTTP",
+      answer: "Let's Encrypt (HTTP challenge)",
+      hint: `${httpNames.join(' + ')} via certbot on port 80 — free, renews itself, no Cloudflare needed${dns === 'proxied' ? ' (proxied: needs “Always Use HTTPS” off for the first request)' : ''}`,
+    },
+    {
+      value: 'le:dns',
+      label: "Let's Encrypt · DNS",
+      answer: "Let's Encrypt (DNS challenge)",
+      hint: domainWide ? `${host} + *.${host} via certbot + Cloudflare DNS — one wildcard for every subdomain` : `${host} via certbot + Cloudflare DNS — works behind the proxy`,
+      disabled: noToken || noZone,
+    },
     {
       value: 'origin',
       label: 'Cloudflare Origin CA',
@@ -346,16 +367,34 @@ async function pickCert(opts, state, { host, dns, zone, token, domainWide = fals
   );
   const pick = await select({ message: `HTTPS certificate for ${c.cyan(host)}`, choices });
   if (pick.startsWith('use:')) return { use: pick.slice(4) };
-  const names = domainWide ? wildcardNames : [host];
-  return { create: pick, name: certs.freeCertName(state, domainWide ? host : host), names };
+  const name = certs.freeCertName(state, host);
+  if (pick === 'le:http') return { create: 'letsencrypt', challenge: 'http', name, names: httpNames };
+  if (pick === 'le:dns') return { create: 'letsencrypt', challenge: 'dns', name, names: domainWide ? wildcardNames : [host] };
+  return { create: pick, name, names: domainWide ? wildcardNames : [host] };
 }
+
+/** --challenge, or DNS-01 when Cloudflare can do it and HTTP-01 when it can't. */
+function pickChallenge(opts, { token, zone }) {
+  const ch = opts.challenge || (token && zone ? 'dns' : 'http');
+  if (!['http', 'dns'].includes(ch)) throw new UsageError('--challenge must be http or dns');
+  if (ch === 'dns' && (!token || !zone)) throw new UsageError('--challenge dns needs a Cloudflare token and the domain in that account — use --challenge http');
+  return ch;
+}
+
+/** What a { create } choice is, for the plan block. */
+const describeNewCert = (choice) =>
+  `${certs.certLabel({ type: choice.create, challenge: choice.challenge })} for ${choice.names.join(', ')}`;
 
 /** Produce the certificate files for a { create } choice. Returns the edge.json entry. */
 async function obtainCert(opts, choice, token) {
   const { create: type, name, names } = choice;
   const label = names.join(', ');
+  if (type === 'letsencrypt' && choice.challenge === 'http') {
+    await preflightHttp(opts, names);
+    return task(`Requesting Let's Encrypt certificate for ${label} (HTTP challenge)`, () => certs.issueLetsEncrypt(name, names, { challenge: 'http' }));
+  }
   if (type === 'letsencrypt') {
-    return task(`Requesting Let's Encrypt certificate for ${label} (DNS challenge, ~1 min)`, () => certs.issueLetsEncrypt(name, names));
+    return task(`Requesting Let's Encrypt certificate for ${label} (DNS challenge, ~1 min)`, () => certs.issueLetsEncrypt(name, names, { challenge: 'dns' }));
   }
   if (type === 'origin') {
     return task(`Creating Cloudflare Origin CA certificate for ${label}`, () => certs.originCert(name, names, token));
@@ -434,11 +473,16 @@ export async function flowDomain(opts, arg) {
   const dns = source ? await pickDns(opts, { host: domain, zone, token }) : 'skip';
 
   plan(`Set up ${domain}`, [
-    ['certificate', certChoice.use ? `use ${certChoice.use}` : `${CERT_TYPES[certChoice.create]} for ${certChoice.names.join(', ')}`],
+    ['certificate', certChoice.use ? `use ${certChoice.use}` : describeNewCert(certChoice)],
     ['serves', source ? describeSource(source) : c.gray('nothing yet')],
     ['dns', source && dns !== 'skip' ? `${domain}, www.${domain} → ${readEnv().SERVER_IP || '?'} (${dns})` : c.gray('unchanged')],
   ]);
   if (!(await sure(opts, 'Go ahead?'))) return;
+
+  // HTTP-01 is validated against DNS, so the records have to exist first
+  const dnsFirst = certChoice.challenge === 'http';
+  const dnsHosts = source ? [domain, `www.${domain}`] : [];
+  if (dnsFirst) for (const h of dnsHosts) await applyDns(h, dns, zone, token);
 
   const next = clone(state);
   const certName = certChoice.use || certChoice.name;
@@ -449,16 +493,25 @@ export async function flowDomain(opts, arg) {
     next.sites[domain] = { cert: certName, source, dns, enabled: true, added: today() };
   }
   await commitOrCleanup(next, certChoice);
-  if (source) {
-    await applyDns(domain, dns, zone, token);
-    await applyDns(`www.${domain}`, dns, zone, token);
-  }
+  if (!dnsFirst) for (const h of dnsHosts) await applyDns(h, dns, zone, token);
   done(source ? `https://${domain}` : domain, source ? describeSource(source) : 'ready for subdomains');
 }
 
-async function commitOrCleanup(next, certChoice) {
+/** Check every name answers an HTTP-01 challenge here before spending Let's Encrypt attempts. */
+async function preflightHttp(opts, names) {
+  const results = await task(`Checking that ${names.join(', ')} reach this server on port 80`, () => certs.checkHttpChallenge(names));
+  const bad = results.filter((r) => r.ok === false);
+  for (const r of results.filter((x) => x.ok === null)) log.warn(`${r.name}: ${r.reason} — skipping the check`);
+  if (!bad.length) return;
+  for (const r of bad) log.warn(`${r.name}: ${r.reason}`);
+  log.hint('point the DNS A record at this server, open port 80, and for Cloudflare-proxied hosts turn “Always Use HTTPS” off (or use the DNS challenge)');
+  const go = opts.force || (canPrompt() && (await confirm({ message: "Ask Let's Encrypt anyway?", initial: false, hint: 'failed attempts count toward its rate limit (5 per hour)' })));
+  if (!go) throw new UsageError('HTTP challenge would fail — nothing was changed (add --force to try anyway)');
+}
+
+async function commitOrCleanup(next, certChoice, commitOpts) {
   try {
-    await commit(next);
+    await commit(next, commitOpts);
   } catch (err) {
     if (certChoice?.create) await certs.removeCertFiles(certChoice.name, next.certs[certChoice.name]).catch(() => {});
     throw err;
@@ -505,18 +558,20 @@ export async function flowSite(opts, arg) {
 
   plan(`Serve ${host}`, [
     ['traffic', describeSource(source)],
-    ['certificate', certChoice.use ? `use ${certChoice.use}` : `new ${CERT_TYPES[certChoice.create]} for ${certChoice.names.join(', ')}`],
+    ['certificate', certChoice.use ? `use ${certChoice.use}` : `new ${describeNewCert(certChoice)}`],
     ['dns', dns === 'skip' ? c.gray('unchanged') : `${host} → ${readEnv().SERVER_IP || '?'} (${dns})`],
   ]);
   if (!(await sure(opts, 'Go ahead?'))) return;
 
+  const dnsFirst = certChoice.challenge === 'http';
+  if (dnsFirst) await applyDns(host, dns, zone, token);
   const next = clone(state);
   const certName = certChoice.use || certChoice.name;
   if (certChoice.create) next.certs[certName] = await obtainCert(opts, certChoice, token);
   const keepPaths = state.sites[host]?.added;
   next.sites[host] = { cert: certName, source, dns, enabled: true, added: keepPaths || today() };
   await commitOrCleanup(next, certChoice);
-  await applyDns(host, dns, zone, token);
+  if (!dnsFirst) await applyDns(host, dns, zone, token);
   done(`https://${host}`, describeSource(source));
 }
 
@@ -595,41 +650,6 @@ export function routeList(state) {
   }
   for (const [key, p] of Object.entries(state.paths)) if (!state.sites[p.host]) out.push({ key, kind: 'path', orphan: true, ...p });
   return out;
-}
-
-export async function removeRoute(opts, target) {
-  const state = loadState();
-  const t = parseTarget(target);
-  const next = clone(state);
-  if (t.path) {
-    if (!next.paths[t.key]) throw new UsageError(`nothing is served at ${t.key}`);
-    delete next.paths[t.key];
-  } else {
-    const site = next.sites[t.host];
-    if (!site) throw new UsageError(`${t.host} is not served`);
-    const children = Object.keys(next.paths).filter((k) => next.paths[k].host === t.host);
-    if (children.length) {
-      const ok =
-        opts.force ||
-        (canPrompt() && (await confirm({ message: `${t.host} has ${children.length} path route(s): ${children.join(', ')}. Remove them too?`, initial: false })));
-      if (!ok) throw new UsageError(`${t.host} still has path routes — remove them first or add --force`);
-      for (const k of children) delete next.paths[k];
-    }
-    delete next.sites[t.host];
-    await commit(next);
-    const token = readToken();
-    const zone = site.dns && site.dns !== 'skip' ? await zoneFor(state, t.host, token) : null;
-    if (zone && token) {
-      const drop =
-        opts['purge-dns'] ||
-        (canPrompt() && !opts.yes && (await confirm({ message: `Also delete the DNS record for ${t.host}?`, initial: false })));
-      if (drop) await task(`Deleting DNS record ${t.host}`, () => cf.deleteRecords(token, zone.id, t.host)).catch((e) => log.warn(e.message));
-    }
-    log.ok(`${t.host} removed`);
-    return;
-  }
-  await commit(next);
-  log.ok(`${t.key} removed`);
 }
 
 export async function toggleRoute(target, enabled) {
@@ -740,20 +760,6 @@ export async function flowAppScan(opts, roots) {
   }
 }
 
-export async function flowAppUnlink(opts, name) {
-  const state = loadState();
-  name = await ask(name, 'the app name', () =>
-    select({ message: 'Unlink which app?', choices: apps.listApps().map((a) => ({ value: a.name, label: a.name, hint: shorten(a.target || a.broken) })) }),
-  );
-  const users = routeList(state).filter((r) => r.source.type === 'app' && r.source.app === name);
-  if (users.length && !opts.force) {
-    throw new UsageError(`${name} is still served at ${users.map((r) => r.key).join(', ')} — remove those routes first or add --force`);
-  }
-  if (!(await sure(opts, `Unlink apps/${name}?`, 'removes the symlink only — the project and its containers are untouched'))) return;
-  apps.unlinkApp(name);
-  log.ok(`apps/${name} unlinked`);
-}
-
 // ═══════════════════════════════════════════════════════════════ certs ═════
 
 export async function flowCertAdd(opts, arg) {
@@ -769,43 +775,30 @@ export async function flowCertAdd(opts, arg) {
   );
   const names = String(namesRaw).split(/[\s,]+/).filter(Boolean).map((h) => h.toLowerCase());
   const main = names[0].replace(/^\*\./, '');
+  const wild = names.some((n) => n.startsWith('*.'));
   const zone = await zoneFor(state, main, token);
-  const type = await ask(opts.cert, '--cert letsencrypt|origin|custom|self-signed', () =>
+  let type = await ask(opts.cert, '--cert letsencrypt|origin|custom|self-signed', () =>
     select({
       message: 'Kind of certificate',
       choices: [
-        { value: 'letsencrypt', label: "Let's Encrypt", hint: 'certbot + Cloudflare DNS, renews itself', disabled: (!token && 'needs a Cloudflare token') || (!zone && 'needs the domain in your Cloudflare account') },
+        { value: 'le:http', label: "Let's Encrypt · HTTP", answer: "Let's Encrypt (HTTP challenge)", hint: 'certbot on port 80, renews itself, no Cloudflare needed', disabled: wild && 'can’t issue wildcards — use the DNS challenge' },
+        { value: 'le:dns', label: "Let's Encrypt · DNS", answer: "Let's Encrypt (DNS challenge)", hint: 'certbot + Cloudflare DNS, renews itself, wildcards too', disabled: (!token && 'needs a Cloudflare token') || (!zone && 'needs the domain in your Cloudflare account') },
         { value: 'origin', label: 'Cloudflare Origin CA', hint: '15 years, proxied hosts only', disabled: !token && 'needs a Cloudflare token' },
         { value: 'custom', label: 'Custom certificate', hint: 'import PEM files' },
         { value: 'self-signed', label: 'Self-signed', hint: 'testing only' },
       ],
     }),
   );
+  let challenge;
+  if (type.startsWith('le:')) [type, challenge] = ['letsencrypt', type.slice(3)];
+  else if (type === 'letsencrypt') challenge = pickChallenge(opts, { token, zone });
+  if (challenge === 'http' && wild) throw new UsageError('HTTP-01 cannot issue wildcards — use --challenge dns');
   const name = opts.name || certs.freeCertName(state, main);
   const next = clone(state);
-  next.certs[name] = await obtainCert(opts, { create: type, name, names }, token);
-  await commit(next, { quiet: true });
+  const choice = { create: type, challenge, name, names };
+  next.certs[name] = await obtainCert(opts, choice, token);
+  await commitOrCleanup(next, choice, { quiet: true });
   log.ok(`certificate ${c.bold(name)} ready ${c.gray(`(${next.certs[name].names.join(', ')})`)}`);
-}
-
-export async function flowCertRemove(opts, name) {
-  const state = loadState();
-  name = await ask(name, 'the certificate name', () =>
-    select({ message: 'Remove which certificate?', choices: Object.keys(state.certs).map((n) => ({ value: n, label: n, hint: state.certs[n].names.join(', ') })) }),
-  );
-  const cert = state.certs[name];
-  if (!cert) throw new UsageError(`no certificate named ${name}`);
-  const users = [
-    ...Object.entries(state.sites).filter(([, s]) => s.cert === name).map(([h]) => h),
-    ...Object.entries(state.domains).filter(([, d]) => d.cert === name).map(([d]) => `domain ${d}`),
-  ];
-  if (users.length) throw new UsageError(`${name} is used by ${users.join(', ')}`);
-  if (!(await sure(opts, `Delete certificate ${name}?`, 'its files are deleted too'))) return;
-  const next = clone(state);
-  delete next.certs[name];
-  await commit(next, { quiet: true });
-  await certs.removeCertFiles(name, cert);
-  log.ok(`certificate ${name} removed`);
 }
 
 export async function flowCertAop(name, on) {
@@ -904,7 +897,7 @@ export async function flowInit(opts) {
   }
 
   writeEnv({ ACME_EMAIL: email, EDGE_NETWORK: network, SERVER_IP: ip || '' });
-  for (const d of [P.letsencrypt, P.certs, P.apps, P.www, P.sslSnippets, P.locations]) fs.mkdirSync(d, { recursive: true });
+  for (const d of [P.letsencrypt, P.certs, P.acme, P.apps, P.www, P.sslSnippets, P.locations]) fs.mkdirSync(d, { recursive: true });
   fs.chmodSync(P.secrets, 0o700);
 
   await task('Fetching Cloudflare IP ranges', async (t) => {
@@ -919,7 +912,7 @@ export async function flowInit(opts) {
   console.log(
     table([
       [c.gray('network'), `${net.name}  ${c.gray(`${net.subnet} · host apps listen on ${net.gateway} · interface ${net.bridge}`)}`],
-      [c.gray('cloudflare'), token ? c.green('token verified') : c.yellow('no token — certbot and DNS records are off')],
+      [c.gray('cloudflare'), token ? c.green('token verified') : c.yellow("no token — DNS records and Let's Encrypt DNS-01 are off (HTTP-01 still works)")],
       [c.gray('public ip'), ip || c.yellow('unknown — DNS records are off')],
     ]).join('\n'),
   );

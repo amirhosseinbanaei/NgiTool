@@ -181,10 +181,19 @@ export function writeFiles(files) {
     fs.writeFileSync(abs, content);
     changed++;
   }
-  // every host with a site gets a locations dir, so its include glob always resolves
+  // every host with a site gets a locations dir, so its include glob always resolves;
+  // the empty dirs of hosts that are gone are removed (anything hand-written stays)
+  const hosts = new Set();
   for (const rel of files.keys()) {
     const m = rel.match(/^conf\/sites\/(.+)\.conf$/);
-    if (m) fs.mkdirSync(path.join(P.locations, m[1]), { recursive: true });
+    if (m) hosts.add(m[1]);
+  }
+  for (const h of hosts) fs.mkdirSync(path.join(P.locations, h), { recursive: true });
+  if (fs.existsSync(P.locations)) {
+    for (const d of fs.readdirSync(P.locations, { withFileTypes: true })) {
+      const abs = path.join(P.locations, d.name);
+      if (d.isDirectory() && !hosts.has(d.name) && !fs.readdirSync(abs).length) fs.rmdirSync(abs);
+    }
   }
   return changed;
 }
@@ -203,12 +212,14 @@ export async function testConfig() {
     res = await compose(['exec', '-T', 'nginx', 'nginx', '-c', IN.conf, '-t', '-q']);
   } else {
     // Same image and mounts as the service, no network needed: upstreams resolve per request.
+    fs.mkdirSync(P.acme, { recursive: true }); // or Docker creates it, owned by root
     res = await docker([
       'run', '--rm', '--network', 'none', '--ulimit', 'nofile=65535:65535',
       '-v', `${P.conf}:/etc/nginx/edge:ro`,
       '-v', `${P.www}:/var/www:ro`,
       '-v', `${P.letsencrypt}:${IN.letsencrypt}:ro`,
       '-v', `${P.certs}:${IN.certs}:ro`,
+      '-v', `${P.acme}:${IN.acme}:ro`,
       '--entrypoint', 'nginx', await nginxImage(), '-c', IN.conf, '-t', '-q',
     ]);
   }

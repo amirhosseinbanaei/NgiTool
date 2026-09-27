@@ -27,6 +27,7 @@ export const P = {
   www: path.join(ROOT, 'www'),
   letsencrypt: path.join(ROOT, 'data', 'letsencrypt'),
   certs: path.join(ROOT, 'data', 'certs'),
+  acme: path.join(ROOT, 'data', 'acme'),
   apps: path.join(ROOT, 'apps'),
   secrets: path.join(ROOT, 'secrets'),
   cfIni: path.join(ROOT, 'secrets', 'cloudflare.ini'),
@@ -38,6 +39,7 @@ export const IN = {
   conf: '/etc/nginx/edge/nginx.conf',
   letsencrypt: '/etc/letsencrypt',
   certs: '/etc/edge-certs',
+  acme: '/var/acme',
 };
 
 // ── .env ────────────────────────────────────────────────────────────────────

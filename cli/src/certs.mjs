@@ -1,5 +1,7 @@
-// Certificates. Four kinds, one shape in edge.json: { type, names, aop? }
-//   letsencrypt   certbot + Cloudflare DNS-01 → data/letsencrypt/live/<name>/   (auto-renewed)
+// Certificates. Four kinds, one shape in edge.json: { type, names, challenge?, aop? }
+//   letsencrypt   certbot → data/letsencrypt/live/<name>/                       (auto-renewed)
+//                   challenge 'http': HTTP-01 through nginx :80 (data/acme) — no Cloudflare needed
+//                   challenge 'dns':  DNS-01 through the Cloudflare API — wildcards, any proxy setup
 //   origin        Cloudflare Origin CA via API → data/certs/<name>/             (15 years, proxied only)
 //   custom        your own PEM files           → data/certs/<name>/
 //   self-signed   openssl, for testing         → data/certs/<name>/
@@ -8,10 +10,10 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { P, readEnv } from './config.mjs';
-import { compose, must, hasCommand } from './exec.mjs';
+import { P, IN, readEnv } from './config.mjs';
+import { compose, must, hasCommand, nginxServesThis, CommandError } from './exec.mjs';
 import { certPaths } from './nginx.mjs';
-import { certCovers } from './targets.mjs';
+import { certCovers, CERT_TYPES } from './targets.mjs';
 import * as cf from './cloudflare.mjs';
 
 /** Parse a PEM chain; facts about its first (leaf) certificate. */
@@ -68,29 +70,110 @@ export function freeCertName(state, base) {
 
 // ── Let's Encrypt ───────────────────────────────────────────────────────────
 
-export async function issueLetsEncrypt(name, names) {
+export const CHALLENGES = {
+  http: 'HTTP-01 via nginx :80',
+  dns: 'DNS-01 via Cloudflare',
+};
+
+/** How a letsencrypt entry is validated. Entries written before HTTP-01 existed are DNS-01. */
+export const challengeOf = (cert) => (cert.type === 'letsencrypt' ? cert.challenge || 'dns' : null);
+
+/** "Let's Encrypt (HTTP)" / "Cloudflare Origin CA" … for lists. */
+export function certLabel(cert) {
+  const ch = challengeOf(cert);
+  return `${CERT_TYPES[cert.type] || cert.type}${ch ? ` (${ch.toUpperCase()})` : ''}`;
+}
+
+/** certbot inside the stack's certbot service (its volumes, its image), captured or on the terminal. */
+export const certbot = (args, opts) =>
+  compose(['--progress', 'quiet', 'run', '--rm', '--no-deps', '--entrypoint', 'certbot', 'certbot', ...args], opts);
+
+export async function issueLetsEncrypt(name, names, { challenge = 'dns' } = {}) {
   const env = readEnv();
   if (!env.ACME_EMAIL) throw new Error('ACME_EMAIL is not set — run `edge init` or add it to .env');
-  const args = [
-    'run', '--rm', '--no-deps', '--entrypoint', 'certbot', 'certbot', 'certonly',
-    '--dns-cloudflare', '--dns-cloudflare-credentials', '/secrets/cloudflare.ini',
-    '--dns-cloudflare-propagation-seconds', env.CF_PROPAGATION_SECONDS || '30',
+  let how;
+  if (challenge === 'http') {
+    const wild = names.filter((n) => n.startsWith('*.'));
+    if (wild.length) throw new Error(`the HTTP challenge can't issue wildcards (${wild.join(', ')}) — use the DNS challenge`);
+    fs.mkdirSync(P.acme, { recursive: true });
+    how = ['--webroot', '--webroot-path', IN.acme];
+  } else {
+    how = [
+      '--dns-cloudflare', '--dns-cloudflare-credentials', '/secrets/cloudflare.ini',
+      '--dns-cloudflare-propagation-seconds', env.CF_PROPAGATION_SECONDS || '30',
+    ];
+  }
+  const res = await certbot([
+    'certonly', ...how,
     '--cert-name', name,
     ...names.flatMap((n) => ['-d', n]),
     '--email', env.ACME_EMAIL, '--agree-tos', '--no-eff-email',
     '--non-interactive', '--keep-until-expiring',
-  ];
-  await must('docker', ['compose', '--progress', 'quiet', ...args]);
-  return { type: 'letsencrypt', names };
+  ]);
+  if (res.code !== 0) throw new CommandError('certbot certonly', { ...res, stderr: explainCertbot(res) });
+  return { type: 'letsencrypt', challenge, names };
 }
 
-export async function renewLetsEncrypt() {
-  const res = await compose(['--progress', 'quiet', 'run', '--rm', '--no-deps', '--entrypoint', 'certbot', 'certbot', 'renew']);
-  return res;
+/** certbot's own error lines, without the "Saving debug log" noise. */
+function explainCertbot(res) {
+  const lines = `${res.stderr}\n${res.stdout}`.split('\n').map((l) => l.trim());
+  const useful = lines.filter((l) => l && !/^(Saving debug log|Ask for help|See the logfile|Some challenges have failed\.?$)/.test(l));
+  return useful.slice(-12).join('\n');
+}
+
+/** `certbot renew`: everything that is due, or one certificate; --force-renewal renews regardless. */
+export function renewLetsEncrypt({ name, force = false } = {}) {
+  return certbot(['renew', ...(name ? ['--cert-name', name] : []), ...(force ? ['--force-renewal'] : [])]);
 }
 
 async function deleteLetsEncrypt(name) {
-  await compose(['--progress', 'quiet', 'run', '--rm', '--no-deps', '--entrypoint', 'certbot', 'certbot', 'delete', '--non-interactive', '--cert-name', name]);
+  await certbot(['delete', '--non-interactive', '--cert-name', name]);
+}
+
+/**
+ * Before asking Let's Encrypt: can this server answer an HTTP-01 challenge for
+ * each name? Puts a file where certbot would and fetches it over the internet
+ * exactly as Let's Encrypt will (http://name/.well-known/acme-challenge/…,
+ * redirects followed). Catches DNS that points elsewhere, a closed port 80, and
+ * an nginx started without the data/acme mount — without spending rate limits.
+ */
+export async function checkHttpChallenge(names) {
+  if (!(await nginxServesThis())) {
+    throw new Error('the HTTP challenge needs nginx running from this copy of nginx-edge — run `edge up` first');
+  }
+  const mounted = await compose(['exec', '-T', 'nginx', 'test', '-d', IN.acme]);
+  if (mounted.code !== 0) {
+    throw new Error('nginx was started before data/acme existed — run `edge up` to recreate it with the challenge folder');
+  }
+  const dir = path.join(P.acme, '.well-known', 'acme-challenge');
+  const token = `edge-check-${crypto.randomBytes(12).toString('hex')}`;
+  const file = path.join(dir, token);
+  try {
+    fs.mkdirSync(dir, { recursive: true, mode: 0o755 });
+    fs.writeFileSync(file, token, { mode: 0o644 });
+  } catch (err) {
+    return names.map((n) => ({ name: n, ok: null, reason: `could not write the test file (${err.code || err.message})` }));
+  }
+  try {
+    return await Promise.all(
+      names.map(async (n) => {
+        const url = `http://${n}/.well-known/acme-challenge/${token}`;
+        try {
+          const res = await fetch(url, { redirect: 'follow', signal: AbortSignal.timeout(10_000) });
+          const body = (await res.text()).trim();
+          if (res.ok && body === token) return { name: n, ok: true };
+          const via = res.url !== url ? ` (redirected to ${res.url})` : '';
+          return { name: n, ok: false, reason: `HTTP ${res.status}${via} — the request did not reach this nginx` };
+        } catch (err) {
+          const code = err.cause?.code || err.cause?.errors?.[0]?.code || (err.name === 'TimeoutError' ? 'timeout' : null);
+          const why = code || [err.message, err.cause?.message].filter(Boolean).join(': ');
+          return { name: n, ok: false, reason: `${why} — DNS or port 80 does not reach this server` };
+        }
+      }),
+    );
+  } finally {
+    fs.rmSync(file, { force: true });
+  }
 }
 
 // ── files in data/certs ─────────────────────────────────────────────────────
