@@ -7,7 +7,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { P, IN, saveState } from './config.mjs';
-import { compose, docker, nginxImage, nginxRunning } from './exec.mjs';
+import { compose, docker, nginxImage, nginxRunning, nginxServesThis } from './exec.mjs';
 import { upstreamOf, describeSource, slugPath, certCovers, CERT_TYPES } from './targets.mjs';
 import { task, log, c } from './ui.mjs';
 
@@ -199,7 +199,7 @@ const noise = (s) =>
 
 export async function testConfig() {
   let res;
-  if (await nginxRunning()) {
+  if (await nginxServesThis()) {
     res = await compose(['exec', '-T', 'nginx', 'nginx', '-c', IN.conf, '-t', '-q']);
   } else {
     // Same image and mounts as the service, no network needed: upstreams resolve per request.
@@ -239,9 +239,13 @@ export async function commit(next, { quiet = false } = {}) {
     throw err;
   }
   saveState(next);
-  if (await nginxRunning()) {
+  if (await nginxServesThis()) {
     await task('Reloading nginx', reloadNginx);
-  } else if (!quiet) {
+  } else if (quiet) {
+    // the caller runs `compose up` next, which (re)creates nginx from this copy
+  } else if (await nginxRunning()) {
+    log.hint(`nginx is running from another copy of nginx-edge — recreate it here with ${c.bold('edge up')}`);
+  } else {
     log.hint(`nginx is not running — start it with ${c.bold('edge up')}`);
   }
 }

@@ -4,7 +4,7 @@ import { spawn } from 'node:child_process';
 
 import { parseArgs, helpText } from './args.mjs';
 import { P, readEnv, loadState, readToken, writeToken } from './config.mjs';
-import { compose, stackStatus, networkInfo, listContainers } from './exec.mjs';
+import { compose, stackStatus, networkInfo, listContainers, nginxServesThis } from './exec.mjs';
 import { commit, testConfig, reloadNginx } from './nginx.mjs';
 import * as certs from './certs.mjs';
 import * as cf from './cloudflare.mjs';
@@ -377,6 +377,10 @@ async function reload() {
   });
   if (!running) {
     log.hint('nginx is not running — edge up');
+    return 0;
+  }
+  if (!(await nginxServesThis())) {
+    log.hint('nginx is running from another copy of nginx-edge — edge up recreates it here');
     return 0;
   }
   await task('Reloading nginx', reloadNginx);
