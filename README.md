@@ -17,19 +17,22 @@ $ edge
     Link an app       symlink a project's docker compose into apps/
   manage
     Status            stack, certificates, routes, apps
+    Domains           list, add, remove
     Routes            enable, disable, replace, remove
-    Apps              start, stop, logs, scan, unlink
-    Certificates      list, add, renew, remove
+    Apps              start, stop, logs, scan, remove
+    Certificates      Let's Encrypt (certbot), renew, remove
     Stack             reload, restart, stop, logs
+    Remove…           a domain, host, path, app, certificate, static folder — or everything
     Quit
   ↑↓ move · ↵ select · esc back · type to filter
 ```
 
 - **Cloudflare**: the CLI creates DNS records (proxied or DNS-only) and restores visitors' real IPs. Authenticated Origin Pulls is optional.
-- **Certificates, chosen per host**: Let's Encrypt (certbot + Cloudflare DNS, auto-renewed), Cloudflare Origin CA, your own files, or self-signed.
+- **Certificates, chosen per host**: Let's Encrypt through certbot (HTTP challenge on port 80, or DNS challenge through Cloudflare; auto-renewed either way), Cloudflare Origin CA, your own files, or self-signed.
 - **Subdomains or paths**: `api.example.com` or `example.com/admin`, sending traffic to a linked app, any container, a port on the host, or static files.
 - **`apps/`**: one folder per project, holding a symlink to its compose file. Start, stop and read logs with `edge app …`.
 - **Safe changes**: every change is checked with `nginx -t` before nginx reloads. If the check fails, the change is rolled back.
+- **Everything can be removed again**: domains, hosts, paths, apps, certificates and static folders. The CLI shows what goes with the thing you remove and asks before deleting anything else that is left unused.
 
 ---
 
@@ -41,7 +44,7 @@ Browser ──HTTPS──► Cloudflare (edge TLS, WAF, cache)
                         ▼
       ┌──────────── host :80 / :443 ───────────────────────────────────┐
       │  nginx container      routes by hostname, then by path         │
-      │  certbot container    renews Let's Encrypt certs every 12h     │
+      │  certbot container    issues + renews Let's Encrypt certs      │
       └───────┬──────────────────┬───────────────────────┬─────────────┘
               │ shared network   │ network gateway IP    │ ./www (read-only)
               │ (EDGE_NETWORK)   │                       │
@@ -76,7 +79,7 @@ edge init
 |---|---|
 | Let's Encrypt email | expiry notices |
 | Docker network | the network nginx shares with your apps. Pick an existing one your apps already use (for example `proxy`) or create `edge`. |
-| Cloudflare API token | for certbot DNS challenges, DNS records and Origin CA. Create it at **My Profile → API Tokens → Create Token → "Edit zone DNS"**. For Origin CA certificates, also add *Zone → SSL and Certificates → Edit*. Press Enter to skip. |
+| Cloudflare API token | for DNS records, Origin CA and Let's Encrypt DNS challenges. Create it at **My Profile → API Tokens → Create Token → "Edit zone DNS"**. For Origin CA certificates, also add *Zone → SSL and Certificates → Edit*. Press Enter to skip: Let's Encrypt still works through the HTTP challenge. |
 | Public IP | where DNS records point (detected automatically) |
 
 Then it fetches Cloudflare's IP ranges, writes the config and offers to start the stack.
@@ -90,7 +93,7 @@ In the Cloudflare dashboard, set **SSL/TLS → encryption mode → Full (strict)
 
 ### Add a domain: `edge domain add example.com`
 
-1. **Certificate** for `example.com` + `*.example.com`. Let's Encrypt wildcard is recommended; Origin CA, custom and self-signed are also offered.
+1. **Certificate**. *Let's Encrypt · DNS* gives one wildcard (`example.com` + `*.example.com`) that covers every subdomain (Cloudflare needed). *Let's Encrypt · HTTP* covers `example.com` + `www.example.com` through port 80 (no Cloudflare needed). Origin CA, custom and self-signed are also offered.
 2. **What the domain itself shows**: a placeholder page (`www/example.com/`), a project, or nothing yet.
 3. **Cloudflare DNS** for `example.com` and `www.example.com`: proxied, DNS only, or leave alone.
 
@@ -104,7 +107,8 @@ The CLI asks, in order:
    - *Leave DNS alone*: you manage the record yourself
 2. **Certificate**
    - *Use \<existing\>*: every certificate that already covers the host is listed with its type and days left, for example the domain's wildcard.
-   - *Let's Encrypt*: a new certificate for this host from certbot. Free, and it renews itself.
+   - *Let's Encrypt · HTTP*: a new certificate for this host from certbot, validated over port 80. Free, renews itself, no Cloudflare needed. The DNS record is created before the request, because Let's Encrypt checks it.
+   - *Let's Encrypt · DNS*: the same, validated through a Cloudflare TXT record. Works behind the orange cloud and for wildcards.
    - *Cloudflare Origin CA*: a 15-year certificate that only Cloudflare trusts. Not offered for DNS-only hosts, because browsers would reject it.
    - *Custom certificate*: import a fullchain and key you already have, from file paths or pasted. The CLI checks that the key matches and that the certificate hasn't expired.
    - *Self-signed*: for testing only.
@@ -136,17 +140,57 @@ also choose whether the prefix is kept or stripped:
 edge ls                          # every route with a live/down/disabled dot
 edge disable example.com/admin   # stop serving it; the entry stays in edge.json
 edge enable  example.com/admin
-edge rm      api.example.com     # asks whether to delete the DNS record too (--purge-dns)
+edge rm      api.example.com     # the host and its paths (see "Removing things")
 ```
 
 In the menu, **Routes → (route) → Change where it points** runs the add flow again for that route.
+
+### Removing things
+
+Everything you can add can be removed again: from the menu (**Remove…**, or
+the Domains / Routes / Apps / Certificates menus), or with a command:
+
+```bash
+edge rm                          # pick what to remove
+edge rm api.example.com          # a host, with its paths
+edge rm example.com/admin        # one path
+edge domain rm example.com       # the domain, its hosts and paths
+edge app rm shop                 # unlink apps/shop and remove the routes that use it
+edge cert rm old-cert            # switch its hosts to another covering cert, or remove them
+edge www ls                      # static folders and the routes serving them
+edge www rm blog                 # a folder in www/, with the routes serving it
+edge reset                       # every route, domain, certificate and app link
+```
+
+Each removal works in three steps:
+
+1. **It shows what goes with it.** Removing a domain takes its hosts and paths
+   with it. Hosts of a more specific domain you added (`shop.example.com`) stay.
+   Removing an app or a static folder takes the routes that point at it.
+2. **It asks.** `edge reset` asks you to type `reset`.
+3. **It asks about leftovers.** Some things are only left unused by the removal:
+   certificates, `www/` folders, Cloudflare DNS records, and the app's running
+   containers. You tick the ones to delete. Certificates are ticked by default.
+
+Nginx is changed in one step, checked with `nginx -t`, and rolled back if the
+check fails. Files and DNS records are deleted only after the check passes. A
+project folder is never deleted. `edge app rm` removes only the symlink and
+`edge.override.yaml`, and stops the containers only if you tick that. A
+domain is never removed together with its certificate: `edge cert rm` points
+the domain at the certificate you switch to, or at none.
+
+Without a terminal: removing more than the target itself needs `--force`,
+leftovers are deleted only with `--purge` (`--purge-dns` deletes only DNS records), and
+`edge reset` needs `--yes --force`. `edge cert rm old --cert new` moves the hosts
+to `new` instead of removing them.
 
 ### Scripting (no prompts)
 
 Every question has a flag. Off a terminal, the CLI fails with the flag it needs instead of prompting.
 
 ```bash
-edge domain add example.com --cert letsencrypt --apex placeholder --dns proxied -y
+edge domain add example.com --cert letsencrypt --challenge dns --apex placeholder --dns proxied -y
+edge site add app.example.org --port 3001 --cert letsencrypt --challenge http --dns skip -y
 edge site add api.example.com --app shop/api:8000 --cert auto --dns proxied -y
 edge site add legacy.example.com --container old_app:8080 --cert custom --cert-file f.pem --key-file k.pem -y
 edge path add example.com/api --app shop/api:8000 --strip -y
@@ -173,7 +217,7 @@ edge app link ~/my-site                     # or a compose file path; --name to 
 edge app scan                               # finds compose projects under /home/* — tick which to link
 edge app ls                                 # running/total containers, compose path, routes using it
 edge app up|down|restart|ps|logs|pull|build <name> [service…]
-edge app unlink <name>                      # removes the symlink only
+edge app rm <name>                          # unlink, with its routes; the project stays
 ```
 
 - **Compose always runs against the real file**, with the project folder as the working directory. The build context, `./data` mounts, `.env` and the project name are exactly what they are when you run `docker compose` inside the project.
@@ -186,7 +230,8 @@ edge app unlink <name>                      # removes the symlink only
 
 | Kind | Stored in | Renewal | Notes |
 |---|---|---|---|
-| Let's Encrypt | `data/letsencrypt/live/<name>/` | automatic: certbot runs every 12h, and nginx reloads every 6h | DNS-01 through Cloudflare, so no port 80 is needed and the proxy doesn't get in the way |
+| Let's Encrypt · HTTP | `data/letsencrypt/live/<name>/` | automatic: certbot runs every 12h, and nginx reloads every 6h | HTTP-01: port 80 must reach this server. No Cloudflare needed. No wildcards. |
+| Let's Encrypt · DNS | `data/letsencrypt/live/<name>/` | the same | DNS-01 through Cloudflare. Wildcards, and the proxy doesn't get in the way. |
 | Cloudflare Origin CA | `data/certs/<name>/` | valid for 15 years | host must be proxied; the token needs *SSL and Certificates → Edit* |
 | Custom | `data/certs/<name>/` | yours | key match and expiry are checked on import |
 | Self-signed | `data/certs/<name>/` | 90 days | testing only; Full (strict) rejects it (Cloudflare error 526) |
@@ -195,9 +240,37 @@ edge app unlink <name>                      # removes the symlink only
 edge cert ls                     # type, names, days left (red under 14 days)
 edge cert add api.x.com,*.x.com  # a certificate outside the domain/site flows
 edge cert renew                  # renew what's due now, then reload
-edge cert rm <name>              # refused while a host still uses it
+edge cert renew <name> --force   # renew one now, even if it isn't due
+edge cert rm <name>              # switch its hosts to another certificate, or remove them
 edge cert aop <name> on|off      # Authenticated Origin Pulls (below)
+edge certbot certificates        # any certbot command, run in the certbot container
 ```
+
+### How certbot is wired in
+
+The `certbot` service in `compose.yaml` runs `certbot renew` every 12 hours.
+nginx picks up renewed certificates on its 6-hour reload, or immediately after
+`edge cert renew`. New certificates are requested by the CLI with
+`docker compose run certbot certonly …`.
+
+For the HTTP challenge, the certbot service and nginx share `data/acme/`.
+certbot writes the challenge file there, and nginx serves
+`/.well-known/acme-challenge/` from it on port 80 for every hostname. Generated
+sites serve it on 443 too. `conf/snippets/acme-challenge.conf` holds that
+location block.
+
+Before it asks Let's Encrypt, the CLI does its own check. It puts a test file
+in `data/acme/` and fetches it from the internet, the way Let's Encrypt will.
+DNS pointing elsewhere, a closed port 80, or an nginx started before
+`data/acme` existed are reported before any rate limit is used. Add `--force`
+to ask Let's Encrypt anyway.
+
+**HTTP challenge behind Cloudflare's orange cloud.** Cloudflare's *Always Use
+HTTPS* redirects the challenge to HTTPS before it reaches nginx. The first
+request then fails (Cloudflare 525), because the host has no HTTPS site yet.
+Turn *Always Use HTTPS* off while the certificate is issued, or use the DNS
+challenge. Renewals work either way, because the site then exists and serves
+the challenge on 443.
 
 Wildcards cover one level only: `*.example.com` covers `api.example.com` but
 not `v2.api.example.com`. Cloudflare's free edge certificate has the same limit.
@@ -228,6 +301,7 @@ nginx-edge/
 │   ├── src/
 │   │   ├── main.mjs             #   commands, menu, status
 │   │   ├── flows.mjs            #   guided flows: init, domain, site, path, apps, certs
+│   │   ├── remove.mjs           #   removal plans (what goes with it) and applying them
 │   │   ├── prompt.mjs           #   select / multiselect / input / confirm / paste (raw stdin)
 │   │   ├── ui.mjs               #   colour, tables, spinners
 │   │   ├── nginx.mjs            #   edge.json → nginx files, nginx -t, reload, rollback
@@ -249,7 +323,7 @@ nginx-edge/
 │   ├── nginx.conf               #   main config
 │   ├── start.sh                 #   nginx + 6h reload loop
 │   ├── conf.d/                  #   tls, resolver, websocket map, cloudflare-realip (generated)
-│   ├── snippets/                #   proxy.conf, security-headers.conf, cloudflare-aop.conf
+│   ├── snippets/                #   proxy.conf, security-headers.conf, cloudflare-aop.conf, acme-challenge.conf
 │   │   └── ssl/<cert>.conf      #   GENERATED
 │   ├── sites/                   #   00-default.conf (hand-written) + <host>.conf (GENERATED)
 │   ├── locations/<host>/        #   <path>.conf (GENERATED)
@@ -258,6 +332,7 @@ nginx-edge/
 ├── www/<dir>/                   # static sites → /var/www (read-only)
 ├── data/
 │   ├── letsencrypt/             # certbot state and certs                 (git-ignored)
+│   ├── acme/                    # HTTP-01 challenge files (certbot → nginx) (git-ignored)
 │   └── certs/<name>/            # Origin CA / custom / self-signed certs  (git-ignored)
 ├── secrets/cloudflare.ini       # API token, chmod 600                     (git-ignored)
 └── examples/                    # compose + systemd examples for projects
@@ -302,3 +377,4 @@ Put everything except `.env`, `secrets/` and `data/` in git.
 | Path app loads, but CSS/JS 404 | App isn't built with its base path (§3) |
 | "nginx rejected the configuration" | The error names the file. Nothing was changed. A hand-written file in `conf/` is the usual cause. |
 | Every visitor has the same IP | `edge cf-sync` |
+| Let's Encrypt HTTP check fails | The CLI names the host and the reason. DNS must point here and port 80 must be open. For proxied hosts, turn *Always Use HTTPS* off or use the DNS challenge (§5). After updating nginx-edge, run `edge up` once so nginx gets the `data/acme` mount. |

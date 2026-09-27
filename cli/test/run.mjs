@@ -21,6 +21,8 @@ const { parseEnv, setEnvText } = await import('../src/config.mjs');
 const { render, buildFiles, writeFiles, readManaged, MARKER } = await import('../src/nginx.mjs');
 const { summarizeServices, upstreamFor, overrideYaml, scanForProjects, findComposeFile, appNameFor } = await import('../src/apps.mjs');
 const { decode } = await import('../src/prompt.mjs');
+const { planRemoval, cascades } = await import('../src/remove.mjs');
+const { challengeOf, certLabel } = await import('../src/certs.mjs');
 
 let passed = 0;
 let failed = 0;
@@ -191,6 +193,10 @@ await test('writeFiles syncs managed files and never touches hand-written ones',
   assert.throws(() => writeFiles(buildFiles(STATE)), /not written by edge/);
 });
 
+// the last test left a hand-written api.example.com.conf behind
+fs.rmSync(path.join(SANDBOX, 'conf/sites/api.example.com.conf'));
+const STATE_OK = STATE;
+
 // ── apps ──────────────────────────────────────────────────────────────────────
 
 const CONFIG = {
@@ -234,6 +240,111 @@ await test('finds compose files and derives app names', () => {
   assert.equal(found.length, 1);
   assert.equal(findComposeFile(path.join(root, 'u', 'My Site')), found[0]);
   assert.equal(appNameFor(found[0]), 'my-site');
+});
+
+// ── removal plans ────────────────────────────────────────────────────────────
+
+const REM = {
+  version: 1,
+  certs: {
+    'example.com': { type: 'letsencrypt', challenge: 'http', names: ['example.com', 'www.example.com'] },
+    'wild.example.com': { type: 'letsencrypt', names: ['example.com', '*.example.com'] },
+    'api.example.com': { type: 'self-signed', names: ['api.example.com'] },
+    'shop.example.com': { type: 'origin', names: ['shop.example.com', '*.shop.example.com'] },
+    'spare': { type: 'custom', names: ['spare.org'] },
+  },
+  domains: {
+    'example.com': { cert: 'example.com', zone: null },
+    'shop.example.com': { cert: 'shop.example.com', zone: null },
+  },
+  sites: {
+    'example.com': { cert: 'example.com', source: { type: 'static', dir: 'example.com' }, dns: 'proxied' },
+    'api.example.com': { cert: 'api.example.com', source: { type: 'app', app: 'shop', service: 'api', port: 8000, upstream: 'shop-api' }, dns: 'dns-only' },
+    'blog.example.com': { cert: 'wild.example.com', source: { type: 'static', dir: 'shared' }, dns: 'skip' },
+    'shop.example.com': { cert: 'shop.example.com', source: { type: 'app', app: 'shop', service: 'web', port: 3000, upstream: 'shop-web' }, dns: 'proxied' },
+  },
+  paths: {
+    'example.com/docs': { host: 'example.com', path: '/docs', source: { type: 'static', dir: 'shared' } },
+    'example.com/api': { host: 'example.com', path: '/api', source: { type: 'app', app: 'shop', service: 'api', port: 8000 } },
+  },
+};
+const sorted = (set) => [...set].sort();
+
+await test('removing a host takes its paths; unused cert, folder and DNS become extras', () => {
+  const p = planRemoval(REM, { kind: 'site', key: 'example.com' });
+  assert.deepEqual(sorted(p.drop.sites), ['example.com']);
+  assert.deepEqual(sorted(p.drop.paths), ['example.com/api', 'example.com/docs']);
+  assert.ok(p.next.domains['example.com'], 'the domain stays');
+  assert.deepEqual(p.extras.certs, [], 'the domain still uses its cert');
+  assert.deepEqual(p.extras.www, ['example.com'], 'shared is still served by blog');
+  assert.deepEqual(p.extras.dns, ['example.com', 'www.example.com']);
+  assert.ok(cascades(p));
+});
+
+await test('removing a domain keeps hosts of a more specific domain', () => {
+  const p = planRemoval(REM, { kind: 'domain', key: 'example.com' });
+  assert.deepEqual(sorted(p.drop.sites), ['api.example.com', 'blog.example.com', 'example.com']);
+  assert.ok(p.next.sites['shop.example.com'] && p.next.domains['shop.example.com']);
+  assert.deepEqual(p.extras.certs, ['api.example.com', 'example.com', 'wild.example.com']);
+  assert.deepEqual(p.extras.www, ['example.com', 'shared']);
+  assert.deepEqual(p.extras.dns, ['example.com', 'www.example.com', 'api.example.com']);
+  assert.ok(!p.extras.certs.includes('spare'), 'certs that were unused already are not offered');
+});
+
+await test('removing an app drops every route that points at it', () => {
+  const p = planRemoval(REM, { kind: 'app', key: 'shop' }, { linked: ['shop', 'other'] });
+  assert.deepEqual(sorted(p.drop.apps), ['shop']);
+  assert.deepEqual(sorted(p.drop.sites), ['api.example.com', 'shop.example.com']);
+  assert.deepEqual(sorted(p.drop.paths), ['example.com/api']);
+  assert.deepEqual(p.extras.down, ['shop']);
+  assert.throws(() => planRemoval(REM, { kind: 'app', key: 'nope' }, { linked: [] }), /no app named/);
+});
+
+await test('removing a cert: move its hosts to a covering cert, or drop them', () => {
+  const moved = planRemoval(REM, { kind: 'cert', key: 'example.com', replaceCert: 'wild.example.com' });
+  assert.equal(moved.next.sites['example.com'].cert, 'wild.example.com');
+  assert.equal(moved.next.domains['example.com'].cert, 'wild.example.com');
+  assert.equal(moved.drop.sites.size, 0);
+  assert.throws(() => planRemoval(REM, { kind: 'cert', key: 'example.com', replaceCert: 'spare' }), /does not cover example\.com/);
+  const dropped = planRemoval(REM, { kind: 'cert', key: 'example.com' });
+  assert.deepEqual(sorted(dropped.drop.sites), ['example.com']);
+  assert.ok(dropped.next.domains['example.com'], 'a domain is never dropped with its cert');
+  assert.equal(dropped.next.domains['example.com'].cert, null);
+  assert.ok(!cascades(planRemoval(REM, { kind: 'cert', key: 'spare' })));
+});
+
+await test('removing a static folder drops the routes serving it; reset drops everything', () => {
+  fs.mkdirSync(path.join(SANDBOX, 'www', 'shared'), { recursive: true });
+  const p = planRemoval(REM, { kind: 'www', key: 'shared' });
+  assert.deepEqual(sorted(p.drop.sites), ['blog.example.com']);
+  assert.deepEqual(sorted(p.drop.paths), ['example.com/docs']);
+  assert.throws(() => planRemoval(REM, { kind: 'www', key: '../etc' }), /invalid folder/);
+  const all = planRemoval(REM, { kind: 'all', key: '' }, { linked: ['shop'] });
+  assert.deepEqual(all.next, { version: 1, certs: {}, domains: {}, sites: {}, paths: {} });
+  assert.deepEqual(sorted(all.drop.apps), ['shop']);
+});
+
+await test('writeFiles removes empty location dirs of hosts that are gone', () => {
+  writeFiles(buildFiles(STATE_OK));
+  fs.writeFileSync(path.join(SANDBOX, 'conf/locations/api.example.com/hand.conf'), 'location /x {}\n');
+  const fewer = structuredClone(STATE_OK);
+  delete fewer.sites['api.other.org'];
+  delete fewer.sites['api.example.com'];
+  writeFiles(buildFiles(fewer));
+  assert.ok(!fs.existsSync(path.join(SANDBOX, 'conf/locations/api.other.org')));
+  assert.ok(fs.existsSync(path.join(SANDBOX, 'conf/locations/api.example.com/hand.conf')), 'hand-written files stay');
+});
+
+await test('letsencrypt entries without a challenge are DNS-01; labels say which', () => {
+  assert.equal(challengeOf({ type: 'letsencrypt' }), 'dns');
+  assert.equal(challengeOf({ type: 'letsencrypt', challenge: 'http' }), 'http');
+  assert.equal(challengeOf({ type: 'origin' }), null);
+  assert.equal(certLabel({ type: 'letsencrypt', challenge: 'http' }), "Let's Encrypt (HTTP)");
+  assert.equal(certLabel({ type: 'custom' }), 'custom');
+});
+
+await test('generated sites answer ACME challenges', () => {
+  assert.match(buildFiles(STATE).get('conf/sites/example.com.conf'), /include \/etc\/nginx\/edge\/snippets\/acme-challenge\.conf;/);
 });
 
 // ── keys ──────────────────────────────────────────────────────────────────────

@@ -1,7 +1,8 @@
 # nginx-edge — the single entry point for every project on this server.
 #
 #   nginx    public :80/:443, routes by hostname or path to the apps
-#   certbot  renews Let's Encrypt certs (DNS-01 via Cloudflare) every 12h
+#   certbot  issues and renews Let's Encrypt certs every 12h — HTTP-01 through
+#            nginx's :80 (data/acme) or DNS-01 through Cloudflare
 #
 # Apps never publish ports. Containers share a Docker network with nginx
 # (EDGE_NETWORK, created by `edge init`); host processes listen on its gateway IP.
@@ -24,6 +25,7 @@ services:
       - ./www:/var/www:ro                     # static sites
       - ./data/letsencrypt:/etc/letsencrypt:ro  # Let's Encrypt (certbot)
       - ./data/certs:/etc/edge-certs:ro         # Origin CA, custom and self-signed certs
+      - ./data/acme:/var/acme:ro                # HTTP-01 challenge files certbot writes
     ulimits:
       nofile: { soft: 65535, hard: 65535 }
     read_only: true
@@ -53,6 +55,7 @@ services:
       - "trap exit TERM; while :; do certbot renew --quiet; sleep 12h & wait $${!}; done"
     volumes:
       - ./data/letsencrypt:/etc/letsencrypt
+      - ./data/acme:/var/acme                   # webroot for HTTP-01 (served by nginx on :80)
       - ./secrets/cloudflare.ini:/secrets/cloudflare.ini:ro
     logging: *logging
 
