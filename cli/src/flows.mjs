@@ -285,6 +285,42 @@ async function pickDns(opts, { host, zone, token }) {
   });
 }
 
+/**
+ * Port 80 for a host: redirect to HTTPS (the default) or serve it over plain HTTP too.
+ * Returns 'serve' | 'redirect'. `current` keeps the existing choice when a route is replaced.
+ */
+async function pickHttp(opts, host, current) {
+  if (opts.http) {
+    if (!HTTP_MODES.includes(opts.http)) throw new UsageError(`--http must be one of ${HTTP_MODES.join(', ')}`);
+    return opts.http;
+  }
+  if (current) return current;
+  if (!canPrompt()) return 'redirect';
+  return select({
+    message: `Plain HTTP (port 80) for ${c.cyan(host)}`,
+    choices: [
+      { value: 'redirect', label: 'Redirect to HTTPS', hint: 'http:// visitors are sent to https:// (recommended)' },
+      { value: 'serve', label: 'Serve over HTTP too', hint: 'http:// and https:// both work — nothing on http:// is encrypted' },
+    ],
+  });
+}
+
+export const HTTP_MODES = ['redirect', 'serve'];
+
+/** A site entry with its port-80 mode; 'redirect' is the default and not stored. */
+const withHttp = (site, http) => {
+  const out = { ...site };
+  delete out.http;
+  if (http === 'serve') out.http = 'serve';
+  return out;
+};
+
+function warnHttp(host, http, dns) {
+  if (http !== 'serve') return;
+  if (dns === 'proxied') log.warn(`${host} is proxied: Cloudflare's “Always Use HTTPS” still redirects http:// before it reaches this server — turn it off to use HTTP`);
+  log.hint('browsers that saw HTTPS-only (HSTS) before keep upgrading until they next load https:// — which now tells them to stop');
+}
+
 async function applyDns(host, mode, zone, token) {
   if (mode === 'skip' || !zone || !token) return;
   const ip = readEnv().SERVER_IP;
@@ -490,7 +526,7 @@ export async function flowDomain(opts, arg) {
   next.domains[domain] = { cert: certName, zone: zone || null, added: today() };
   if (source) {
     if (source.type === 'static') ensureStaticDir(source.dir, domain);
-    next.sites[domain] = { cert: certName, source, dns, enabled: true, added: today() };
+    next.sites[domain] = withHttp({ cert: certName, source, dns, enabled: true, added: today() }, opts.http === 'serve' ? 'serve' : 'redirect');
   }
   await commitOrCleanup(next, certChoice);
   if (!dnsFirst) for (const h of dnsHosts) await applyDns(h, dns, zone, token);
@@ -555,11 +591,13 @@ export async function flowSite(opts, arg) {
   const dns = await pickDns(opts, { host, zone, token });
   const certChoice = await pickCert(opts, state, { host, dns, zone, token });
   const source = await pickSource(opts, host);
+  const http = await pickHttp(opts, host, state.sites[host]?.http || (state.sites[host] ? 'redirect' : undefined));
 
   plan(`Serve ${host}`, [
     ['traffic', describeSource(source)],
     ['certificate', certChoice.use ? `use ${certChoice.use}` : `new ${describeNewCert(certChoice)}`],
     ['dns', dns === 'skip' ? c.gray('unchanged') : `${host} → ${readEnv().SERVER_IP || '?'} (${dns})`],
+    ['http', http === 'serve' ? c.yellow('served over plain HTTP too') : 'redirected to HTTPS'],
   ]);
   if (!(await sure(opts, 'Go ahead?'))) return;
 
@@ -569,10 +607,11 @@ export async function flowSite(opts, arg) {
   const certName = certChoice.use || certChoice.name;
   if (certChoice.create) next.certs[certName] = await obtainCert(opts, certChoice, token);
   const keepPaths = state.sites[host]?.added;
-  next.sites[host] = { cert: certName, source, dns, enabled: true, added: keepPaths || today() };
+  next.sites[host] = withHttp({ cert: certName, source, dns, enabled: true, added: keepPaths || today() }, http);
   await commitOrCleanup(next, certChoice);
   if (!dnsFirst) await applyDns(host, dns, zone, token);
-  done(`https://${host}`, describeSource(source));
+  warnHttp(host, http, dns);
+  done(`${http === 'serve' ? 'http(s)' : 'https'}://${host}`, describeSource(source));
 }
 
 // ═══════════════════════════════════════════════════════════════ path ═════
@@ -650,6 +689,47 @@ export function routeList(state) {
   }
   for (const [key, p] of Object.entries(state.paths)) if (!state.sites[p.host]) out.push({ key, kind: 'path', orphan: true, ...p });
   return out;
+}
+
+/** `edge http <host> serve|redirect` — plain HTTP for a host, and the paths on it. */
+export async function flowHttp(opts, target, mode) {
+  const state = loadState();
+  const hosts = Object.keys(state.sites);
+  if (!hosts.length) throw new UsageError('there are no hosts yet');
+  const host = target
+    ? parseTarget(target).host
+    : await ask(null, 'the host (edge http api.example.com serve)', () =>
+        select({
+          message: 'Which host?',
+          choices: hosts.map((h) => ({ value: h, label: h, hint: state.sites[h].http === 'serve' ? 'http + https' : 'https only' })),
+        }),
+      );
+  const site = state.sites[host];
+  if (!site) throw new UsageError(`${host} is not served`);
+  const current = site.http === 'serve' ? 'serve' : 'redirect';
+  if (!mode) {
+    mode = await ask(null, 'serve or redirect (edge http <host> serve|redirect)', () =>
+      select({
+        message: `Plain HTTP for ${c.cyan(host)}`,
+        initial: current === 'serve' ? 'redirect' : 'serve',
+        choices: [
+          { value: 'redirect', label: 'Redirect to HTTPS', hint: current === 'redirect' ? 'current' : 'http:// visitors are sent to https://' },
+          { value: 'serve', label: 'Serve over HTTP too', hint: current === 'serve' ? 'current' : 'http:// and https:// both work — nothing on http:// is encrypted' },
+        ],
+      }),
+    );
+  }
+  if (!HTTP_MODES.includes(mode)) throw new UsageError(`usage: edge http <host> ${HTTP_MODES.join('|')}`);
+  if (mode === current) {
+    log.info(`${host} already ${mode === 'serve' ? 'serves plain HTTP' : 'redirects HTTP to HTTPS'}`);
+    return 0;
+  }
+  const next = clone(state);
+  next.sites[host] = withHttp(site, mode);
+  await commit(next);
+  log.ok(`${host}: ${mode === 'serve' ? 'served over plain HTTP too' : 'HTTP redirects to HTTPS'}`);
+  warnHttp(host, mode, site.dns);
+  return 0;
 }
 
 export async function toggleRoute(target, enabled) {
