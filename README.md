@@ -113,7 +113,8 @@ The CLI asks, in order:
    - *Custom certificate*: import a fullchain and key you already have, from file paths or pasted. The CLI checks that the key matches and that the certificate hasn't expired.
    - *Self-signed*: for testing only.
 3. **Where traffic goes**: see below.
-4. **A summary**, then *Go ahead?*
+4. **Plain HTTP (port 80)**: *Redirect to HTTPS* (the default) or *Serve over HTTP too* (see below).
+5. **A summary**, then *Go ahead?*
 
 ### Add a path: `edge path add example.com/admin`
 
@@ -144,6 +145,31 @@ edge rm      api.example.com     # the host and its paths (see "Removing things"
 ```
 
 In the menu, **Routes → (route) → Change where it points** runs the add flow again for that route.
+
+### Serving plain HTTP too
+
+By default port 80 only redirects to HTTPS. To make a host work on `http://` as
+well, without the redirect:
+
+```bash
+edge http api.example.com serve       # http:// and https:// both work
+edge http api.example.com redirect    # back to the default
+edge site add api.example.com --http serve …
+```
+
+Or use the menu: **Routes → (host) → Serve over HTTP too**. The host's generated
+file then has a second `server` on port 80 that serves the same app, folder and
+path routes. The app gets `X-Forwarded-Proto: http` on those requests, so it
+doesn't build `https://` links or redirects.
+
+- **HSTS**: every other host sends `Strict-Transport-Security` for a year, which
+  makes browsers switch to `https://` on their own. A host served over HTTP sends
+  `max-age=0` on HTTPS instead. A browser that stored the old policy keeps
+  switching until it loads the `https://` page once more (or you clear it at
+  `chrome://net-internals/#hsts`).
+- **Cloudflare-proxied hosts**: Cloudflare's *Always Use HTTPS* redirects before
+  the request reaches this server. Turn it off for HTTP to work.
+- Nothing on `http://` is encrypted, including logins and cookies.
 
 ### Removing things
 
@@ -374,6 +400,7 @@ Put everything except `.env`, `secrets/` and `data/` in git.
 | Cloudflare 525 | No site for that hostname, or AOP on in nginx but off in Cloudflare |
 | Cloudflare 526 | Self-signed or expired certificate, or a host two levels deep |
 | Redirect loop | Cloudflare SSL mode is "Flexible". Set it to Full (strict). |
+| `http://` still redirects to HTTPS | Run `edge http <host> serve`. If it still redirects, the browser remembered HSTS: open the `https://` page once, or clear it at `chrome://net-internals/#hsts`. For proxied hosts, turn off Cloudflare's *Always Use HTTPS*. |
 | Path app loads, but CSS/JS 404 | App isn't built with its base path (§3) |
 | "nginx rejected the configuration" | The error names the file. Nothing was changed. A hand-written file in `conf/` is the usual cause. |
 | Every visitor has the same IP | `edge cf-sync` |
