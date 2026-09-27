@@ -1,6 +1,7 @@
 // Child processes: docker, docker compose, openssl. Output is captured unless
 // `inherit` is set (logs, interactive certbot), so spinners stay clean.
 
+import fs from 'node:fs';
 import { spawn } from 'node:child_process';
 import { P } from './config.mjs';
 
@@ -64,6 +65,18 @@ export async function stackStatus() {
 
 export async function nginxRunning() {
   return (await stackStatus()).nginx?.state === 'running';
+}
+
+/**
+ * True when the running nginx mounts this checkout's conf/. A stack started from
+ * another copy (or one since deleted) has the same project name, so `compose exec`
+ * would test and reload files the CLI never wrote. Compared by inode, which a bind
+ * mount keeps.
+ */
+export async function nginxServesThis() {
+  if (!(await nginxRunning())) return false;
+  const res = await compose(['exec', '-T', 'nginx', 'stat', '-c', '%i', '/etc/nginx/edge']);
+  return res.code === 0 && Number(res.stdout.trim()) === fs.statSync(P.conf).ino;
 }
 
 let imageCache = null;
