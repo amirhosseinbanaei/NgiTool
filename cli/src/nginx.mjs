@@ -61,6 +61,11 @@ export function certPaths(name, cert) {
 
 // ── state → files ───────────────────────────────────────────────────────────
 
+const HSTS_ON = 'add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;';
+// served over plain HTTP too: HSTS would make browsers upgrade to HTTPS on their own,
+// and max-age=0 also clears the policy they cached from earlier HTTPS visits
+const HSTS_OFF = 'add_header Strict-Transport-Security "max-age=0" always;  # also served over plain HTTP';
+
 /** Every managed file the state describes: Map<path relative to ROOT, content>. */
 export function buildFiles(state) {
   const files = new Map();
@@ -91,17 +96,18 @@ export function buildFiles(state) {
       site.source.type === 'static'
         ? render(tpl('body-static.tpl'), { DIR: site.source.dir })
         : render(tpl('body-proxy.tpl'), { UPSTREAM: upstreamOf(site.source) });
-    files.set(
-      `conf/sites/${host}.conf`,
-      render(tpl('site.conf.tpl'), {
-        TARGET: host,
-        DESC: describeSource(site.source),
-        HOST: host,
-        SERVER_NAMES: apexWithWww ? `${host} www.${host}` : host,
-        CERT: site.cert,
-        BODY: body.replace(/\n$/, ''),
-      }),
-    );
+    const vars = {
+      TARGET: host,
+      DESC: describeSource(site.source) + (site.http === 'serve' ? ' (also plain HTTP)' : ''),
+      HOST: host,
+      SERVER_NAMES: apexWithWww ? `${host} www.${host}` : host,
+      CERT: site.cert,
+      HSTS: site.http === 'serve' ? HSTS_OFF : HSTS_ON,
+      BODY: body.replace(/\n$/, ''),
+    };
+    let conf = render(tpl('site.conf.tpl'), vars);
+    if (site.http === 'serve') conf += render(tpl('site-http.conf.tpl'), vars);
+    files.set(`conf/sites/${host}.conf`, conf);
   }
 
   for (const [key, route] of Object.entries(state.paths)) {

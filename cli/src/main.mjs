@@ -96,6 +96,7 @@ async function dispatch([cmd, ...rest], opts) {
     case 'sub':
     case 'subdomain':
       if (sub === 'add') return flows.flowSite(opts, args[0]);
+      if (sub === 'http') return flows.flowHttp(opts, args[0], args[1]);
       if (sub === 'rm' || sub === 'remove') return removeOne(opts, 'site', args[0] && parseTarget(args[0]).host);
       if (!sub || sub === 'ls') return printRoutes(loadState(), await liveness());
       break;
@@ -116,6 +117,8 @@ async function dispatch([cmd, ...rest], opts) {
       break;
     case 'reset':
       return remove.flowRemove(opts, { kind: 'all', key: '' });
+    case 'http':
+      return flows.flowHttp(opts, sub, args[0]);
     case 'enable':
     case 'disable':
       if (!sub) throw new UsageError(`usage: edge ${cmd} <host>[/<path>]`);
@@ -214,6 +217,7 @@ function printRoutes(state, live) {
     const extra = [];
     if (r.kind === 'site') extra.push(r.dns === 'proxied' ? c.yellow('proxied') : r.dns === 'dns-only' ? 'dns-only' : c.gray('dns manual'));
     if (r.kind === 'site') extra.push(c.gray(`cert ${r.cert}`));
+    if (r.kind === 'site' && r.http === 'serve') extra.push(c.yellow('http too'));
     if (r.strip) extra.push(c.gray('strip'));
     if (r.enabled === false) extra.push(c.gray('disabled'));
     if (alive === false && r.enabled !== false) extra.push(c.red('upstream down'));
@@ -584,13 +588,18 @@ async function routesMenu(opts) {
     choices: [
       r.enabled === false ? { value: 'enable', label: 'Enable' } : { value: 'disable', label: 'Disable', hint: 'keep it in edge.json, stop serving it' },
       { value: 'replace', label: 'Change where it points', hint: 'pick a new app, container, port or folder' },
+      r.kind === 'site' &&
+        (r.http === 'serve'
+          ? { value: 'redirect', label: 'Redirect HTTP to HTTPS', hint: 'stop serving plain http://' }
+          : { value: 'serve', label: 'Serve over HTTP too', hint: 'http:// works without a redirect — unencrypted' }),
       { value: 'remove', label: 'Remove' },
     ],
   });
   if (action === 'enable' || action === 'disable') return flows.toggleRoute(key, action === 'enable');
+  if (action === 'serve' || action === 'redirect') return flows.flowHttp(opts, key, action);
   if (action === 'remove') return remove.flowRemove(opts, { kind: r.kind, key });
   const force = { ...opts, force: true };
-  if (r.kind === 'site') return flows.flowSite({ ...force, cert: r.cert, dns: r.dns }, key);
+  if (r.kind === 'site') return flows.flowSite({ ...force, cert: r.cert, dns: r.dns, http: r.http || 'redirect' }, key);
   return flows.flowPath(force, key);
 }
 

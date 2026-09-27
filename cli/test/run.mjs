@@ -343,6 +343,27 @@ await test('letsencrypt entries without a challenge are DNS-01; labels say which
   assert.equal(certLabel({ type: 'custom' }), 'custom');
 });
 
+await test('plain HTTP: serve adds a :80 server and turns HSTS off for that host only', () => {
+  const st = structuredClone(STATE);
+  st.sites['api.example.com'].http = 'serve';
+  const f = buildFiles(st);
+  const api = f.get('conf/sites/api.example.com.conf');
+  assert.equal((api.match(/^server \{/gm) || []).length, 2);
+  assert.match(api, /listen 80;\n    server_name api\.example\.com;/);
+  assert.match(api, /listen 80;[\s\S]*include \/etc\/nginx\/edge\/locations\/api\.example\.com\/\*\.conf;[\s\S]*set \$upstream shop-web:3000;/);
+  assert.match(api, /Strict-Transport-Security "max-age=0"/);
+  assert.doesNotMatch(api, /max-age=31536000/);
+  const apex = f.get('conf/sites/example.com.conf');
+  assert.doesNotMatch(apex, /listen 80;/);
+  assert.match(apex, /Strict-Transport-Security "max-age=31536000; includeSubDomains" always;/);
+});
+
+await test('shared snippets: no HSTS in security-headers, scheme-aware X-Forwarded-Proto', () => {
+  const conf = (f) => fs.readFileSync(path.join(REAL_ROOT, 'conf', 'snippets', f), 'utf8');
+  assert.doesNotMatch(conf('security-headers.conf'), /^add_header Strict-Transport-Security/m);
+  assert.match(conf('proxy.conf'), /X-Forwarded-Proto \$scheme;/);
+});
+
 await test('generated sites answer ACME challenges', () => {
   assert.match(buildFiles(STATE).get('conf/sites/example.com.conf'), /include \/etc\/nginx\/edge\/snippets\/acme-challenge\.conf;/);
 });

@@ -7,6 +7,7 @@ server {
 
     include /etc/nginx/edge/snippets/ssl/{{CERT}}.conf;
     include /etc/nginx/edge/snippets/security-headers.conf;
+    {{HSTS}}
     # Let's Encrypt HTTP-01 renewals that arrive over HTTPS (Cloudflare "Always Use HTTPS")
     include /etc/nginx/edge/snippets/acme-challenge.conf;
 

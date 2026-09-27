@@ -5,7 +5,7 @@ const BOOLEAN = new Set([
 ]);
 const VALUE = new Set([
   'app', 'container', 'port', 'static', 'cert', 'dns', 'cert-file', 'key-file', 'name', 'email',
-  'network', 'subnet', 'token', 'server-ip', 'apex', 'attach', 'tail', 'challenge',
+  'network', 'subnet', 'token', 'server-ip', 'apex', 'attach', 'tail', 'challenge', 'http',
 ]);
 const ALIAS = { y: 'yes', f: 'force', h: 'help', v: 'version' };
 
@@ -69,6 +69,7 @@ ${b('SERVE A PROJECT')}
   edge path add [example.com/admin]      path on an existing host → project
   edge ls                                everything that is served
   edge enable | disable <target>         target = host or host/path
+  edge http <host> serve|redirect        plain HTTP too, or redirect port 80 to HTTPS (default)
 
   Where traffic goes ${g('(asked interactively when not given)')}:
     --app NAME/SERVICE[:PORT]            a service of a project in apps/
@@ -76,6 +77,7 @@ ${b('SERVE A PROJECT')}
     --port PORT                          a process on this server
     --static DIR                         files in www/DIR
   --dns proxied|dns-only|skip            Cloudflare record for the host
+  --http redirect|serve                  port 80: redirect to HTTPS (default) or serve plain HTTP too
   --cert auto|NAME|letsencrypt|origin|custom|self-signed
          --challenge http|dns            for --cert letsencrypt (default: dns with Cloudflare, else http)
          --cert-file F --key-file F      for --cert custom
