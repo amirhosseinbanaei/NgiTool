@@ -14,7 +14,7 @@ type Config struct {
 	Schema      int      `json:"schema"`
 	UpdateCheck bool     `json:"updateCheck"`         // background "new version" notice
 	Channel     string   `json:"channel"`             // "stable" or "prerelease"
-	ScanRoots   []string `json:"scanRoots"`           // where compose projects are looked for
+	ScanRoots   []string `json:"scanRoots"`           // where compose projects are looked for (globs allowed)
 	FrontDoor   string   `json:"frontDoor,omitempty"` // default instance that owns :80/:443
 	Pinned      string   `json:"pinned,omitempty"`    // set by `update --version`, cleared by a plain update
 }
@@ -25,7 +25,7 @@ func DefaultConfig() Config {
 		Schema:      ConfigSchema,
 		UpdateCheck: true,
 		Channel:     "stable",
-		ScanRoots:   []string{"/home", "/root", "/opt", "/srv"},
+		ScanRoots:   []string{"/home/*", "/root", "/opt", "/srv"},
 	}
 }
 
