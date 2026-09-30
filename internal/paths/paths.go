@@ -33,6 +33,7 @@ type Paths struct {
 	Overrides   string
 	Cache       string
 	UpdateCheck string
+	ScanCache   string
 }
 
 // Get resolves every path, honouring NGITOOL_ROOT.
@@ -56,6 +57,7 @@ func Get() Paths {
 		Overrides:   filepath.Join(lib, "overrides"),
 		Cache:       cache,
 		UpdateCheck: filepath.Join(cache, "update-check.json"),
+		ScanCache:   filepath.Join(cache, "scan.json"),
 	}
 }
 

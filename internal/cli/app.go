@@ -33,6 +33,7 @@ type env struct {
 	force   bool
 	noColor bool
 	root    *cobra.Command
+	memo    scanMemo // one scan shared by everything in this run
 }
 
 // ExitError ends the run with Code; Msg is printed unless empty.
@@ -122,6 +123,9 @@ func newRoot(e *env) *cobra.Command {
 // commands is every command, in help order within each group. Later
 // prompts add theirs here and their group to menu.go.
 var commands = []func(*env) *cobra.Command{
+	scanCmd,
+	instancesCmd,
+	inspectCmd,
 	doctorCmd,
 	versionCmd,
 	updateCmd,

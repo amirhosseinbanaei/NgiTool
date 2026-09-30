@@ -24,6 +24,7 @@ type Group struct {
 }
 
 var groups = []Group{
+	{ID: "instances", Title: "INSTANCES", Label: "Instances", Note: "every nginx on this server: scan, list, inspect"},
 	{ID: "server", Title: "SERVER", Label: "This server", Note: "check what this machine has"},
 	{ID: "tool", Title: "NGITOOL", Label: "NgiTool itself", Note: "version, update, completion, uninstall"},
 }
@@ -37,7 +38,10 @@ type MenuItem struct {
 }
 
 var menuItems = []MenuItem{
-	{Group: "server", Label: "Doctor", Hint: "root, docker, compose v2, ss, state dir, updates", Args: []string{"doctor"}},
+	{Group: "instances", Label: "Scan", Hint: "find every nginx and what NgiTool may do to it", Args: []string{"scan"}},
+	{Group: "instances", Label: "List", Hint: "one line per instance", Args: []string{"instances"}},
+	{Group: "instances", Label: "Inspect", Hint: "servers, locations and targets of one instance", Args: []string{"inspect"}},
+	{Group: "server", Label: "Doctor", Hint: "root, docker, compose v2, ss, front door, configs, state dir, updates", Args: []string{"doctor"}},
 	{Group: "tool", Label: "Update", Hint: "install the latest release", Args: []string{"update"}},
 	{Group: "tool", Label: "Check for updates", Hint: "compare with the latest release", Args: []string{"update", "--check"}},
 	{Group: "tool", Label: "Roll back", Hint: "restore the binary from before the last update", Args: []string{"update", "--rollback"}},
