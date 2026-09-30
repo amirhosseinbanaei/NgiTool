@@ -123,3 +123,20 @@ to run, the file to fix.
 A mutating flow shows a Plan block, an Explain panel when the action is
 destructive or easy to misunderstand (restart, recreate, rebuild, down,
 downgrade, purge), then asks. It holds the state lock while it writes.
+
+## 9. Instances
+
+`scan` shows one card per nginx; `instances` is the compact table; `inspect`
+is a Plan block plus a Tree.
+
+- **Kind icon**: ◆ edge · ⌂ host · ◫ compose · ▣ container.
+- **State dot**: `OK` ● running · `Warn` ● stopped · `Muted` ○ defined.
+- **Badges**: `[front door]` in `OK`; another manager in `Warn` (`[swag]`).
+- **Capability chips**: ✔ read ✔ test ✔ reload ✔ write in `OK`, or ○ in
+  `Muted` with `name: reason` on its own line below. A true capability that
+  could be misread (a `:ro` mount, a single-file mount) gets a muted note.
+- **Findings** are grouped Errors, Warnings, Notes; each is a check line
+  whose fix hint follows `→`, with the edge-case ID muted at the end.
+- **Tree targets** are coloured by reachability: `OK` reachable, `Err`
+  missing or no shared network, `Warn` nothing listening; unknown stays plain.
+  Every node's hint ends with its file:line.
