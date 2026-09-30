@@ -1,5 +1,12 @@
 # nginx-edge
 
+> **This project is becoming NgiTool**: a single Go binary, `ngitool`, that
+> manages every nginx on a server (host, containers, Compose projects and this
+> edge stack) for reverse proxy and load balancing. It installs with
+> `curl -fsSL https://raw.githubusercontent.com/amirhosseinbanaei/NgiTool/main/install.sh | sh`
+> and updates itself (`ngitool update`). The Node `edge` CLI documented below
+> keeps working until the Go CLI reaches parity. See [AGENTS.md](AGENTS.md).
+
 One nginx for every project on the server. It runs in Docker Compose (nothing
 is installed on the host except Docker and Node) and is managed with the
 `edge` CLI. Everything that serving depends on lives in this directory:
