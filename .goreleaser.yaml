@@ -1,0 +1,73 @@
+# GoReleaser v2 — run by .github/workflows/release.yml on v* tags.
+# `make release-local VERSION=vX.Y.Z` produces the same archive names and
+# checksums.txt without GoReleaser, for offline checks.
+version: 2
+
+project_name: ngitool
+
+before:
+  hooks:
+    - go mod download
+
+builds:
+  - id: ngitool
+    main: ./cmd/ngitool
+    binary: ngitool
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w
+      - -X github.com/amirhosseinbanaei/NgiTool/internal/version.Version={{ .Tag }}
+      - -X github.com/amirhosseinbanaei/NgiTool/internal/version.Commit={{ .ShortCommit }}
+      - -X github.com/amirhosseinbanaei/NgiTool/internal/version.Date={{ .Date }}
+    goos:
+      - linux
+    goarch:
+      - amd64
+      - arm64
+      - arm
+    goarm:
+      - "7"
+
+archives:
+  - id: ngitool
+    formats: [tar.gz]
+    # ngitool_<version>_linux_<amd64|arm64|armv7>.tar.gz — the names
+    # install.sh and `ngitool update` look for.
+    name_template: >-
+      {{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ if eq .Arch "arm" }}armv{{ .Arm }}{{ else }}{{ .Arch }}{{ end }}
+    # The binary only, like `make release-local`.
+    files:
+      - none*
+
+checksum:
+  name_template: checksums.txt
+  algorithm: sha256
+
+changelog:
+  use: git
+  sort: asc
+  filters:
+    exclude:
+      - "^Merge "
+      - '^(docs|test|chore|ci|style)(\(.+\))?!?:'
+  groups:
+    - title: Features
+      regexp: '^.*?feat(\(.+\))??!?:.+$'
+      order: 0
+    - title: Bug fixes
+      regexp: '^.*?fix(\(.+\))??!?:.+$'
+      order: 1
+    - title: Performance
+      regexp: '^.*?perf(\(.+\))??!?:.+$'
+      order: 2
+    - title: Other changes
+      order: 999
+
+release:
+  github:
+    owner: amirhosseinbanaei
+    name: NgiTool
+  prerelease: auto
