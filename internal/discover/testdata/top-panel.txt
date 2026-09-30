@@ -1,0 +1,6 @@
+PID                 PPID                COMMAND
+2100                2099                nginx: master process nginx -g daemon off;
+2101                2100                nginx: worker process
+2102                2100                nginx: worker process
+2103                2100                nginx: worker process
+2104                2100                nginx: worker process

@@ -1,0 +1,4 @@
+PID                 PPID                COMMAND
+2200                2199                s6-svscan -t0 /var/run/s6/services
+2210                2200                nginx: master process /usr/sbin/nginx
+2211                2210                nginx: worker process

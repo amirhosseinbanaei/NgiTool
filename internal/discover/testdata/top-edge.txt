@@ -1,0 +1,8 @@
+PID                 PPID                COMMAND
+2000                1999                nginx: master process nginx -c /etc/nginx/edge/nginx.conf -g daemon off;
+2001                2000                /bin/sh /etc/nginx/edge/start.sh
+2002                2000                sleep 21600
+2003                2000                nginx: worker process
+2004                2000                nginx: worker process
+2005                2000                nginx: worker process
+2006                2000                nginx: worker process

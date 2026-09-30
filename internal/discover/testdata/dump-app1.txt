@@ -1,0 +1,16 @@
+# configuration file /etc/nginx/nginx.conf:
+events {}
+http {
+    include /etc/nginx/conf.d/*.conf;
+}
+
+# configuration file /etc/nginx/conf.d/default.conf:
+server {
+    listen 8080;
+    server_name _;
+    root /usr/share/nginx/html;
+    location / {
+        try_files $uri /index.html;
+    }
+}
+
