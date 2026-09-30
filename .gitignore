@@ -25,3 +25,7 @@ www/*
 
 # Local tooling
 .claude/
+prompts/
+
+# NgiTool build output
+dist/
