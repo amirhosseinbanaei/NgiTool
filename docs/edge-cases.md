@@ -1,0 +1,185 @@
+# NgiTool edge cases
+
+This is the master list of everything that can go wrong or be unusual in
+NgiTool's two subjects, **reverse proxy** and **load balancing**, and on the
+system around them. Code, tests and commit messages refer to entries by ID
+(`RP-07`, `LB-03`, …). New findings get the next free ID in their group; IDs
+are never reused or renumbered.
+
+Status is **done (prompt N)** once the behaviour and its test exist, and
+**planned (prompt N)** for the prompt that owns it:
+
+| Prompt | Owns |
+|---|---|
+| 1 | foundation: UI kit, state, paths, update, install (SYS) |
+| 2 | discovery and config parsing (DISC, CONF) |
+| 3 | writing config, routes, pools, apply (RP, LB, APPLY) |
+| 4 | compose scanning and app lifecycle (DOCK) |
+| 5 | the bundled edge stack, certificates, migration from the Node CLI (EDGE, CERT, MIG) |
+
+"Test" says how the entry is proven: a unit test (package and name), a
+fixture, or a manual check that is described well enough to repeat. Examples
+use `example.com` and made-up project names only.
+
+---
+
+## DISC — discovery
+
+| ID | Situation | How NgiTool detects it | What NgiTool does | Test | Status |
+|---|---|---|---|---|---|
+| DISC-01 | No nginx anywhere on the server. | Every probe (processes, systemd units, binaries on PATH, containers, compose files) comes back empty. | Says so plainly and offers the bundled edge stack as the way to start; never guesses an instance. | fixture: empty sandbox → "no nginx found" plus the edge offer | planned (prompt 2) |
+| DISC-02 | Distro nginx under systemd, running. | `systemctl show nginx` (ActiveState, MainPID, ExecStart), `/proc/<pid>/cmdline` for `-c`/`-p`. | Lists it as a host instance with its config path, binary, version (`nginx -V`) and reload method (`systemctl reload`). | fixture: fake systemctl output | planned (prompt 2) |
+| DISC-03 | nginx installed but stopped or disabled. | Unit exists with ActiveState inactive/failed, or the binary exists with no master process. | Listed as stopped; config is still read from disk; changes are written but not reloaded, with a hint to start it. | fixture: inactive unit | planned (prompt 2) |
+| DISC-04 | Several host master processes (different `-c` or `-p`, e.g. a second nginx on :8080). | One master per `ps` entry whose parent is not another nginx; `-c`/`-p` from cmdline; listening ports from `ss -ltnp`. | Each master is its own instance, named by config path; never merged. | fixture: two masters with different `-c` | planned (prompt 2) |
+| DISC-05 | Source-built nginx outside PATH (e.g. `/opt/nginx/sbin/nginx`). | `/proc/<pid>/exe` of the master process. | Uses that binary for `-t`, `-T` and `-V`; shows the path. | fixture: master exe outside PATH | planned (prompt 2) |
+| DISC-06 | Variants: openresty, angie, tengine, nginx-unprivileged (listens on 8080, non-root). | `-V` banner (`openresty/`, `Angie/`, `Tengine/`), image name, `User` in the image config, listen ports. | Treated as nginx-compatible with the variant shown; directives the variant lacks are not generated; unprivileged images get 8080-style listens. | fixture: `-V` banners for each variant | planned (prompt 2) |
+| DISC-07 | Container started with plain `docker run` (no compose labels). | `docker ps` + `docker inspect`: no `com.docker.compose.project` label. | Listed as a container instance; config from its mounts; changes need a reload through `docker exec`. | fixture: inspect JSON without labels | planned (prompt 2) |
+| DISC-08 | A compose project's own nginx, running or stopped. | Compose labels on the container (project, service, config_files, working_dir). | Listed under the project with its service name; stopped ones are still read from the mounted files (CONF-02). | fixture: labelled inspect JSON, running and exited | planned (prompt 2) |
+| DISC-09 | An nginx service that exists only in a compose file and was never started. | Compose scan (DOCK-01) finds a service whose image or build is nginx-like and no container exists. | Listed as "defined, not created"; read-only until it has run once, with the command to start it. | fixture: compose file with nginx service, no containers | planned (prompt 2) |
+| DISC-10 | An image not named nginx that runs nginx (custom app image). | `docker top` shows an `nginx: master process`, or the entrypoint/cmd runs nginx. | Treated as an nginx instance like DISC-07/08. | fixture: `docker top` output | planned (prompt 2) |
+| DISC-11 | nginx owned by another manager: nginx-proxy-manager, jwilder/nginx-proxy, swag, Traefik in front. | Image names and labels (`jc21/nginx-proxy-manager`, `nginxproxy/nginx-proxy`, `linuxserver/swag`), docker-gen sidecars. | Listed as read-only with the manager's name: NgiTool never writes where another tool regenerates files. | fixture: images of each manager | planned (prompt 2) |
+| DISC-12 | Container in host network mode. | `HostConfig.NetworkMode == host`. | Ports are the host's; upstreams follow host rules (RP-05 does not apply); port ownership checked with `ss`. | fixture: host-mode inspect | planned (prompt 2) |
+| DISC-13 | Docker missing, daemon down, rootless docker, podman, or no socket permission. | `docker` not on PATH; `docker info` exit code and stderr (permission denied, cannot connect); `DOCKER_HOST` pointing at a user socket; `docker version` reporting Podman. | Host instances still work; container discovery is skipped with the reason and the fix (doctor shows the same). Podman is reported, not driven. | unit: doctor daemon check (prompt 1); fixture: each stderr | planned (prompt 2) |
+| DISC-14 | Not running as root. | `os.Geteuid() != 0`. | Partial results with the reason on each line that could not be read (other users' processes, `/etc/nginx` not readable); writes refused with the sudo command. | doctor root check (prompt 1); fixture: permission-denied reads | planned (prompt 2) |
+| DISC-15 | Who owns :80 and :443 — host nginx, `docker-proxy` → container, something else, nothing, or two instances configured for the same port. | `ss -ltnp` → pid → host nginx, or `docker-proxy` → published port → container. Configured listens from each instance's config. | Shows the owner of each port; flags instances whose config wants a port another instance owns (only one can bind it). Picks or asks for the front door. | fixture: ss output with docker-proxy | planned (prompt 2) |
+| DISC-16 | Kubernetes ingress-nginx present. | Processes/containers named `nginx-ingress-controller`, a kubelet on the host. | Reported as out of scope; never touched. | fixture: process list | planned (prompt 2) |
+| DISC-17 | nginx running inside an LXC/VM or on another host. | Not visible from here at all. | Out of scope; doctor and the "no nginx" screen say that only this machine is scanned. | manual | planned (prompt 2) |
+| DISC-18 | systemd drop-in changes ExecStart (`-c` elsewhere, `-g` directives). | `systemctl show -p ExecStart,DropInPaths`. | The drop-in's `-c` and `-g` win over the defaults; shown in the instance details. | fixture: drop-in ExecStart | planned (prompt 2) |
+
+## CONF — configuration reading
+
+| ID | Situation | How NgiTool detects it | What NgiTool does | Test | Status |
+|---|---|---|---|---|---|
+| CONF-01 | `include` with globs, sites-available/sites-enabled symlinks, conf.d. | Parser follows `include` relative to the prefix; globs expanded in nginx's order; symlinks resolved. | Tree shows each server under the file that really defines it; the symlink (enabled) vs target (available) distinction is kept. | fixture: debian layout | planned (prompt 2) |
+| CONF-02 | `nginx -T` unavailable (stopped container, missing binary). | `-T` fails or cannot run. | Resolves includes from the files themselves (host paths, or the container's bind mounts mapped back to the host). | fixture: stopped container with mounts | planned (prompt 2) |
+| CONF-03 | The config is already invalid before any change. | `nginx -t` fails before NgiTool has written anything. | Instance is read-only until fixed; the error (file:line) is shown; nothing is written on top of a broken config. | fixture: invalid config | planned (prompt 2) |
+| CONF-04 | Parser robustness: quotes, escapes, regex `server_name` and `location`, comments, `if` blocks, `*_by_lua_block` bodies. | Tokenizer with nginx's quoting rules; lua block bodies captured as opaque text. | Everything round-trips; unknown directives are kept verbatim, never dropped. | fixture corpus + round-trip test | planned (prompt 2) |
+| CONF-05 | Variables and `map` in `proxy_pass`. | `proxy_pass` argument contains `$`. | Shown as dynamic (with the map when it is simple); never "resolved" to one upstream. | fixture | planned (prompt 2) |
+| CONF-06 | Config baked into the image, no bind mount. | No mount covers the config path in `docker inspect`. | Read-only; offers an opt-in "externalize": copy the config to a host dir and add a compose override that mounts it. | fixture: inspect without mounts | planned (prompt 2) |
+| CONF-07 | Single-file bind mount vs directory mount; `:ro` mounts. | Mount type and `RW` flag. | Single-file mounts are edited in place (rename would break the inode the container sees); `:ro` mounts are read-only with an explanation. | fixture: file mount, ro mount | planned (prompt 2) |
+| CONF-08 | Official image templates (`/etc/nginx/templates/*.template`, envsubst at start). | Template dir mounted; rendered file in conf.d. | Edits go to the template, not the rendered file; `${VAR}` placeholders are preserved. | fixture | planned (prompt 2) |
+| CONF-09 | Hand-written files beside managed ones. | Managed files carry the `# Managed by NgiTool` header (the Node CLI used the same idea). | Hand-written files are never modified or deleted; conflicts with them are reported. | fixture: mixed dir | planned (prompt 2) |
+| CONF-10 | CRLF line endings, UTF-8 BOM, non-UTF-8 files. | Byte inspection on read. | CRLF and BOM are tolerated and preserved on write; non-UTF-8 files are read-only with a message. | fixture | planned (prompt 2) |
+| CONF-11 | `nginx -T` output contains secrets (API keys in headers, basic-auth paths). | Always. | `-T` output is parsed in memory and never logged or cached whole. | review + unit on log output | planned (prompt 2) |
+| CONF-12 | `stream {}` blocks (TCP/UDP proxying). | Parser sees a top-level `stream` context. | Shown read-only as out of scope (see RP-14). | fixture | planned (prompt 2) |
+
+## RP — reverse proxy
+
+| ID | Situation | How NgiTool detects it | What NgiTool does | Test | Status |
+|---|---|---|---|---|---|
+| RP-01 | Host route plus apex/www. | A route for `example.com` or `www.example.com`. | Offers the pair (serve both, or redirect one to the other) as the Node CLI did. | render fixture | planned (prompt 3) |
+| RP-02 | Path route: strip vs keep the prefix; bare path. Apps without a basePath loop on redirects when mounted on a path (Next.js is the known case). | Route is `host/path`. | Asks strip or keep; bare `/path` gets a 301 to `/path/`; warns before creating a path route for an app that is not built with a base path. | render fixture | planned (prompt 3) |
+| RP-03 | Duplicate `server_name` on the same listen in one instance (nginx keeps the first and warns). | Parsed config of the instance. | Refuses to add a second one; offers to edit the existing server instead. | fixture | planned (prompt 3) |
+| RP-04 | Same host on two instances (front door plus an inner nginx). | Discovery across instances. | Asks whether to chain (front door proxies to the inner nginx) or treat it as a conflict. | fixture | planned (prompt 3) |
+| RP-05 | Container-name upstreams need a shared network and Docker DNS; host nginx cannot resolve container names. | Instance type (host vs container) and the upstream's networks. | Containerised nginx: shared network plus `resolver 127.0.0.11`. Host nginx: a port published on 127.0.0.1. Container IPs are never stored. | render fixture per instance type | planned (prompt 3) |
+| RP-06 | A host process behind containerised nginx. | Upstream is a host port and the instance is a container. | Uses the bridge gateway IP (or `host.docker.internal:host-gateway`) and prints the firewall hint. | render fixture | planned (prompt 3) |
+| RP-07 | Upstream down when nginx starts: a static `proxy_pass` host makes nginx refuse to start. | Always, for name-based upstreams. | Variable `proxy_pass` with a resolver (or `resolve` on new enough nginx) so one missing app cannot take nginx down. | render fixture + `nginx -t` with the upstream absent | planned (prompt 3) |
+| RP-08 | WebSocket upgrade, SSE and streaming, long polling. | Asked per route (or detected from existing config). | Upgrade/Connection map, `proxy_buffering off` for streams, longer `proxy_read_timeout` for polling. | render fixture | planned (prompt 3) |
+| RP-09 | "upstream sent too big header" 502. | Error log line, or on request. | Larger `proxy_buffer_size`/`proxy_buffers` for the route. | render fixture | planned (prompt 3) |
+| RP-10 | 413 on uploads. | Error log / on request. | Per-route `client_max_body_size`. | render fixture | planned (prompt 3) |
+| RP-11 | HTTPS upstreams: SNI, name, verification; `$host` vs `$proxy_host` for external upstreams. | Upstream URL scheme. | `proxy_ssl_server_name on`, `proxy_ssl_name`, optional verification; Host header chosen per upstream kind. | render fixture | planned (prompt 3) |
+| RP-12 | X-Forwarded-* trust chain; real client IP. | Instance sits behind Cloudflare or another proxy. | `real_ip_header` only from trusted ranges (the Cloudflare list the Node CLI keeps); X-Forwarded-For appended, not replaced. | render fixture | planned (prompt 3) |
+| RP-13 | Upstream redirects with the wrong host or port. | On request / Location header in probe. | `proxy_redirect` and `absolute_redirect off`. | render fixture | planned (prompt 3) |
+| RP-14 | gRPC; TCP/UDP stream. | Route type chosen; `stream {}` in config. | gRPC via `grpc_pass` on an http2 listener. Stream proxying is reported, never generated, for now. | render fixture | planned (prompt 3) |
+| RP-15 | IPv6 listen and literal IPv6 upstreams. | Host has global IPv6; upstream literal contains `:`. | `listen [::]:…` alongside IPv4; literals bracketed. | render fixture | planned (prompt 3) |
+| RP-16 | Unix-socket upstreams and their permissions. | Upstream `unix:/path`. | Checks the socket exists and the nginx worker user can open it; says which permission is missing. | fixture | planned (prompt 3) |
+| RP-17 | Redirect vs also-serve plain HTTP, and HSTS. | Per-host choice. | Redirect by default; "serve" drops HSTS for that host with a warning that browsers may remember it. | render fixture | planned (prompt 3) |
+| RP-18 | No certificate for the name on that instance; unknown SNI. | Certificate inventory of the instance. | HTTP-only route or attach a cert; unknown SNI is rejected by the default server, never answered with another site's cert. | render fixture | planned (prompt 3) |
+| RP-19 | IDN/punycode, uppercase, wildcard and regex `server_name`. | Input normalisation. | Lower-cased and punycoded before writing; wildcard/regex names accepted and shown as such. | unit | planned (prompt 3) |
+| RP-20 | Location precedence (`=`, `^~`, regex vs prefix): a new path shadowed by an existing regex location. | Evaluate the new path against existing locations in nginx's order. | Warns which location would win, before writing. | unit | planned (prompt 3) |
+| RP-21 | Cloudflare 520/522/525/526. | On request (troubleshooting view). | Explains each code with the likely cause (SSL mode, origin cert, Authenticated Origin Pulls). | doc/unit on the hint table | planned (prompt 3) |
+| RP-22 | Disable vs remove a route. | Command used. | Disable keeps the route in state and removes it from nginx; enable restores it. | unit | planned (prompt 3) |
+| RP-23 | Trailing-slash semantics of `proxy_pass` with a URI part. | Route strip/keep choice. | Generates the exact slash combination for the chosen behaviour instead of letting users hand-edit it. | render fixture | planned (prompt 3) |
+| RP-24 | Upstream serves by virtual host and needs a specific Host header. | On request. | Per-route Host override (`proxy_set_header Host`). | render fixture | planned (prompt 3) |
+
+## LB — load balancing
+
+| ID | Situation | How NgiTool detects it | What NgiTool does | Test | Status |
+|---|---|---|---|---|---|
+| LB-01 | Methods: round robin, `least_conn`, `ip_hash`, `hash key [consistent]`, `random [two least_conn]`; mutually exclusive. | Pool definition. | One method per pool; switching replaces the old one. | render fixture | planned (prompt 3) |
+| LB-02 | `weight`, `backup` (rejected by nginx with hash, ip_hash and random), `down`, `max_fails`, `fail_timeout`, `max_conns` (needs `zone`). | Member options vs pool method. | Refuses `backup` with those methods and adds `zone` when `max_conns` is used. | unit | planned (prompt 3) |
+| LB-03 | Docker names whose IPs change: `server name:port resolve` needs `zone` + `resolver` + nginx ≥ 1.27.3. | `nginx -v` of the instance. | Uses `resolve` when available; on older nginx falls back (variable proxy_pass to one name) and says what is lost (per-member weights and health). | render fixture per version | planned (prompt 3) |
+| LB-04 | A scaled compose service: one name, N IPs. | Compose scale / containers with the same service label. | One `resolve` member covers all replicas; without `resolve` the fallback is explained. | fixture | planned (prompt 3) |
+| LB-05 | Mixed members (container + host port + remote IP). | Member kinds in one pool. | Allowed; each member rendered by its kind's rules (RP-05/06). | render fixture | planned (prompt 3) |
+| LB-06 | Upstream keepalive needs `proxy_http_version 1.1` and `Connection ""` without breaking the WebSocket map. | Pool with keepalive and a WebSocket route. | Uses the map so Upgrade still works while idle connections are reused. | render fixture | planned (prompt 3) |
+| LB-07 | Sticky sessions: `ip_hash` behind Cloudflare/NAT collapses to a few IPs; `sticky` is NGINX Plus only. | Instance behind Cloudflare (RP-12). | Suggests `hash $http_cf_connecting_ip consistent` or a cookie hash instead. | unit | planned (prompt 3) |
+| LB-08 | Active health checks are Plus only. | Always on open-source nginx. | Passive `max_fails` plus an NgiTool probe that shows member health. | unit | planned (prompt 3) |
+| LB-09 | Draining a member for a deploy; blue/green switching. | Command. | Mark `down` (drain), reload, wait, bring back; blue/green swaps pool members in one apply. | render fixture | planned (prompt 3) |
+| LB-10 | `proxy_next_upstream`: non-idempotent requests are not retried; tries and timeout limits. | Pool options. | Defaults that never retry POST unless asked, with `proxy_next_upstream_tries`/`_timeout` set. | render fixture | planned (prompt 3) |
+| LB-11 | All members down. | Probe / error log. | 502 by default; optional backup member or error page. | render fixture | planned (prompt 3) |
+| LB-12 | A pool used by several routes: removal cascades. | State references. | Lists the routes that use the pool before removing (like the Node CLI's cascade removal). | unit | planned (prompt 3) |
+| LB-13 | Upstream name clashes with a hand-written upstream. | Parsed upstream names. | Managed upstreams are namespaced `ngt_<pool>`. | unit | planned (prompt 3) |
+| LB-14 | Zone size for large pools. | Member count. | Sizes `zone` from the member count with headroom. | unit | planned (prompt 3) |
+| LB-15 | Plus-only directives (`slow_start`, `queue`, `ntlm`, `sticky`). | Requested option. | Refused with an explanation of the open-source alternative. | unit | planned (prompt 3) |
+| LB-16 | Mixed `http` and `https` members in one pool. | Member schemes. | Refused: one `proxy_pass` scheme per pool; suggests two pools. | unit | planned (prompt 3) |
+
+## DOCK — Docker and Compose
+
+| ID | Situation | How NgiTool detects it | What NgiTool does | Test | Status |
+|---|---|---|---|---|---|
+| DOCK-01 | Every compose file name and place: `compose.yaml/.yml`, `docker-compose.yaml/.yml`, `compose.<env>.yaml`, `docker-compose.<env>.yml`, `*.compose.yaml`, files under `docker/`, `deploy/`, `.docker/`, `infra/` — including e.g. a `compose.dev.yml` two levels down in `backend/docker/`. | Scan of the configured scan roots with those patterns, bounded depth. | Lists every candidate grouped by project directory. | fixture tree | planned (prompt 4) |
+| DOCK-02 | Several files per project. | A running project's `com.docker.compose.project.config_files` label. | That label is the authoritative `-f` list; for stopped projects the user picks. | fixture | planned (prompt 4) |
+| DOCK-03 | Project name from `-p`, `COMPOSE_PROJECT_NAME` or `name:`, differing from the folder. | Labels on running containers; `name:` in the file. | Always passes `-p` explicitly with the real name. | fixture | planned (prompt 4) |
+| DOCK-04 | `include:`, `extends:`, `env_file`, `.env`, profiles; `docker compose config` failing. | Exit code of `config`. | Falls back to raw YAML; never prints resolved environment. | fixture | planned (prompt 4) |
+| DOCK-05 | Only compose v1 (`docker-compose`) installed. | `docker compose version` fails, `docker-compose` exists. | Warning with the plugin install command. | doctor compose check | done (prompt 1) — doctor; command use planned (prompt 4) |
+| DOCK-06 | `container_name`, aliases, services on no shared network, `network_mode: host` or `service:x`. | Compose model / inspect. | Upstream name chosen from what nginx can actually reach; unreachable ones say why. | fixture | planned (prompt 4) |
+| DOCK-07 | A plain `docker compose up` drops NgiTool's override: the container leaves the proxy network and the route answers 502. | Container not on the expected network; route probe fails. | Status shows it; `ngitool app up` re-applies with the override; the fix is offered. | fixture | planned (prompt 4) |
+| DOCK-08 | `COMPOSE_PROJECT_NAME` / `COMPOSE_FILE` leaking into child compose runs. | Always. | Scrubbed from every child compose environment. | unit: execx TestEnvScrub | done (prompt 1) — runner; use in commands planned (prompt 4) |
+| DOCK-09 | Compose files owned by other users. | File owner ≠ current user. | Listed; acted on only after confirmation; never chowned. | fixture | planned (prompt 4) |
+| DOCK-10 | Symlinked, moved or deleted compose files. | Label paths that no longer exist; symlink targets. | Reported as missing with the last known path; offers to re-link. | fixture | planned (prompt 4) |
+| DOCK-11 | Ports published on `0.0.0.0` bypass the proxy. | `ports:` without a host IP. | Warns and offers `127.0.0.1:` binding or `expose:`. | fixture | planned (prompt 4) |
+| DOCK-12 | Docker's iptables rules bypass ufw. | ufw active + published ports. | Explains; recommends loopback binds (DOCK-11). | fixture | planned (prompt 4) |
+| DOCK-13 | build vs `up --build` vs `--no-cache` vs `pull`. | Command chosen. | Each explained in one line before running; never `--no-cache` silently. | unit | planned (prompt 4) |
+| DOCK-14 | restart vs force-recreate vs down; `--no-deps`; the danger of `--remove-orphans`. | Command chosen. | Explain panel before recreate/down; `--remove-orphans` only with typed confirm. | unit | planned (prompt 4) |
+| DOCK-15 | Double proxy (front door plus a project nginx): who terminates TLS. | Chain from RP-04. | Front door terminates; inner proxy gets X-Forwarded-Proto; shown in the tree. | fixture | planned (prompt 4) |
+| DOCK-16 | Container IDs and IPs change on recreate. | Always. | Only names are stored, never IDs or IPs. | unit | planned (prompt 4) |
+| DOCK-17 | A restart policy restarts a container while NgiTool edits its config. | Container restart count / events. | Writes are atomic per file and the test runs against the final files, so a restart mid-apply sees old or new, never half. | fixture | planned (prompt 4) |
+
+## APPLY — writing and applying changes
+
+| ID | Situation | How NgiTool detects it | What NgiTool does | Test | Status |
+|---|---|---|---|---|---|
+| APPLY-01 | Render, write, `nginx -t`, reload; roll back on failure. | Exit codes. | Snapshot first; on a failed test the snapshot is restored and nothing reloads (the Node CLI's behaviour). | integration with a test nginx | planned (prompt 3) |
+| APPLY-02 | Testing a stopped container's config. | Instance stopped. | `docker run --rm` with the same image and mounts runs `nginx -t`. | integration | planned (prompt 3) |
+| APPLY-03 | Reload methods; reload fails after the test passed. | Instance type; reload exit code; error log. | systemd reload, `nginx -s reload`, or `docker exec … nginx -s reload`; a failed reload restores the snapshot and reloads again. | fixture | planned (prompt 3) |
+| APPLY-04 | Concurrent runs. | Exclusive flock on `/var/lib/ngitool/.lock`. | A second mutating run waits up to 10 s with a spinner naming the holder, then fails clearly. | unit: state TestLockContention; manual: two processes | planned (prompt 3) — lock itself done (prompt 1) |
+| APPLY-05 | Drift: a managed file edited by hand. | Hash of the rendered file in state vs disk. | Shows a diff and asks: keep theirs (adopt), overwrite, or abort. | fixture | planned (prompt 3) |
+| APPLY-06 | Snapshots and rollback. | Every apply. | Snapshot to `/var/lib/ngitool/backups/` before writing; `ngitool rollback` restores one. | unit | planned (prompt 3) |
+| APPLY-07 | Disk full or read-only filesystem. | Write/fsync/rename errors (ENOSPC, EROFS). | Aborts before touching the live files (writes are temp + rename); the error names the path. | unit with a full tmpfs | planned (prompt 3) |
+| APPLY-08 | Dry-run and diff. | `--dry-run`. | Prints the coloured unified diff of every file (ui.Diff) and changes nothing. | unit | planned (prompt 3) |
+| APPLY-09 | A change spans several files and one write fails. | Error mid-apply. | All files are staged first and swapped together; a failure restores the snapshot. | unit | planned (prompt 3) |
+| APPLY-10 | Reload succeeds but a worker cannot bind a new listen port. | Error log after reload; `ss` for the port. | Reports the bind error and offers to roll back. | fixture | planned (prompt 3) |
+
+## SYS — the tool itself
+
+| ID | Situation | How NgiTool detects it | What NgiTool does | Test | Status |
+|---|---|---|---|---|---|
+| SYS-01 | Architectures; missing curl/wget/sha256sum. | `uname -s`/`-m` in install.sh; GOOS/GOARCH in `update`. | Builds for linux amd64, arm64, armv7; anything else stops with a clear message. install.sh falls back from curl to wget and from sha256sum to `shasum -a 256`, and names the package to install when none exists. | unit: update TestAssetPerArch; manual: install.sh against the local mirror | done (prompt 1) |
+| SYS-02 | GitHub unreachable or rate-limited; offline install. | Network error; 403/429 with `X-RateLimit-Remaining: 0`. | Rate limit explained with `GITHUB_TOKEN` (sent only to api.github.com) and the reset time. Offline: `NGITOOL_DOWNLOAD_BASE` + `NGITOOL_VERSION`/`--version` work without the API; `--version` continues without release notes when the list cannot be read. | unit: update TestRateLimit, TestTokenOnlyToGitHubAPI; manual: local mirror flow | done (prompt 1) |
+| SYS-03 | Updating the running binary; binary dir not writable. | `access(dir, W_OK)` before downloading. | New binary written next to the old one and renamed over it (running processes keep the old inode); old one kept as `<binary>.prev`. A non-writable dir fails before any download with the exact `sudo …` command. | unit: update TestInstallAndRollback, TestCheckWritable | done (prompt 1) |
+| SYS-04 | Checksum mismatch. | SHA-256 of the archive vs `checksums.txt`; asset missing from the list. | Aborts; the installed binary and `.prev` are untouched; same in install.sh. | unit: update TestDownloadChecksumMismatch, TestVerifyUnlisted; manual: tampered mirror | done (prompt 1) |
+| SYS-05 | Pin, downgrade, prerelease channel. | `--version`, `--prerelease`, `channel` in config.json. | `--version vX.Y.Z` installs exactly that release (downgrades show an Explain panel) and records `pinned`, which silences the background notice; a plain `update` clears it. Pre-releases only with `--prerelease` or channel `prerelease`. | unit: version TestCompare, update TestLatestAndFind, cli TestUpdateCheckExitCodes | done (prompt 1) |
+| SYS-06 | NO_COLOR, dumb terminals, narrow terminals, pipes, `--json`. | Env, TERM, `--no-color`, TTY check, terminal width. | Plain text with the same content; hints drop before labels under 60 columns; help stacks notes under commands; `--json` prints only JSON. | unit: ui TestNoColorIsPlain, TestNarrowDropsHints, TestTableTruncatesLastColumn; manual: tmux at 50 columns | done (prompt 1) |
+| SYS-07 | State schema migration. | Top-level `schema` integer on load. | Migrations run in memory on load; under the lock the original is kept as `<file>.schema-N.bak` and the upgraded file saved. A file from a newer NgiTool is refused with "run ngitool update". | unit: state TestSchemaMigrationHook | done (prompt 1) |
+| SYS-08 | Uninstall: keep vs purge. | `--purge`. | Lists exactly what goes. Without `--purge` only the binary, `.prev` and the `ngt` alias (only when it points at this binary). With it also `/etc/ngitool`, `/var/lib/ngitool`, `/var/cache/ngitool` after a typed confirm (`--yes --force` off a terminal); nginx, containers and nginx files are left alone. | unit: cli TestUninstallRemovesOnlyWhatItLists, TestSafeToPurge | done (prompt 1) |
+| SYS-09 | Ctrl-C and Esc anywhere. | Key in prompts; SIGINT otherwise. | Esc goes back one level (quits at the top); Ctrl-C restores the cursor and exits 130; a spinner never leaves the cursor hidden. | manual: tmux | done (prompt 1) |
+| SYS-10 | config.json or state.json is not valid JSON (hand edit, truncated file). | JSON decode error on load. | Refuses to run the command and names the file; never overwrites it. | unit: state TestInvalidJSONNamesTheFile | done (prompt 1) |
+| SYS-11 | The downloaded binary does not start here or reports another version. | New binary runs `version --json` before it replaces the old one. | Aborts; nothing is replaced. | unit: update TestInstallAndRollback (failing check) | done (prompt 1) |
+| SYS-12 | Rolling back with no previous binary. | `<binary>.prev` missing. | Clear error; rolling back twice swaps back. | unit: update TestRollbackWithoutPrev | done (prompt 1) |
+| SYS-13 | Background update check must never slow down or break a command. | TTY, CI, `NGITOOL_NO_UPDATE_CHECK`, config, pin, dev build. | At most once per 24 h, in a detached child with a 2 s timeout; the notice is one muted line on stderr, printed from the cache after a command finishes. | manual | done (prompt 1) |
+| SYS-14 | Non-root user running their own copy (`NGITOOL_PREFIX=$HOME/.local`). | Lock dir or `/etc/ngitool` not writable. | `update` works without the lock and warns if it cannot record a pin; install.sh refuses a prefix it cannot write and says which one to use. | manual | done (prompt 1) |
+
+## EDGE, CERT, MIG — the bundled edge stack, certificates, migration
+
+| ID | Situation | How NgiTool detects it | What NgiTool does | Test | Status |
+|---|---|---|---|---|---|
+| EDGE-01 | :80/:443 already owned when the edge stack starts. | DISC-15. | Refuses to start it and names the owner; offers to put the edge stack behind or in front of it. | fixture | planned (prompt 5) |
+| EDGE-02 | The shared Docker network is missing or was deleted. | `docker network inspect`. | Recreates it (asked) and reconnects managed containers. | fixture | planned (prompt 5) |
+| EDGE-03 | The edge stack's compose project is started by hand with another project name. | Labels. | Detects the duplicate stack and refuses to run two. | fixture | planned (prompt 5) |
+| CERT-01 | Let's Encrypt HTTP-01 fails (DNS elsewhere, port 80 closed, Cloudflare "Always Use HTTPS"). | certbot output. | Names the host and the reason; offers DNS-01 through Cloudflare. | fixture | planned (prompt 5) |
+| CERT-02 | Certificate expiring or expired; renew fails. | Expiry dates; renew exit code. | Status shows days left in colour; renew failures named per certificate. | unit | planned (prompt 5) |
+| CERT-03 | Cloudflare Origin CA or self-signed certificate on a host that is not proxied. | DNS mode vs cert kind. | Warns that browsers will reject it. | unit | planned (prompt 5) |
+| CERT-04 | Wildcard certificate covering hosts two levels deep (a.b.example.com). | Name matching. | Explains that `*.example.com` does not cover it. | unit | planned (prompt 5) |
+| MIG-01 | Existing Node `edge` CLI install with `edge.json`. | `edge.json` in the old stack directory. | Imports hosts, paths, apps and certificates into state.json, shows the plan, changes nothing until confirmed. | fixture: example edge.json | planned (prompt 5) |
+| MIG-02 | Hand edits in the old stack's generated files. | Hash vs regenerated output. | Shown as drift (APPLY-05) before migrating. | fixture | planned (prompt 5) |
+| MIG-03 | Removing the legacy `cli/` directory. | After a successful migration. | Only then; README rewritten for NgiTool. | manual | planned (prompt 5) |
