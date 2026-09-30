@@ -160,3 +160,18 @@ func timeoutText(ctx context.Context, d time.Duration) string {
 	}
 	return ctx.Err().Error()
 }
+
+// Runner runs a command. Packages that shell out take one so tests can swap
+// in recorded output (FakeRunner) instead of touching the machine.
+type Runner interface {
+	Run(ctx context.Context, name string, args []string, o Opts) Result
+}
+
+// System is the Runner that really runs commands.
+var System Runner = systemRunner{}
+
+type systemRunner struct{}
+
+func (systemRunner) Run(ctx context.Context, name string, args []string, o Opts) Result {
+	return Run(ctx, name, args, o)
+}
