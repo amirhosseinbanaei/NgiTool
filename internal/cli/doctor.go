@@ -13,6 +13,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/amirhosseinbanaei/NgiTool/internal/discover"
 	"github.com/amirhosseinbanaei/NgiTool/internal/execx"
 	"github.com/amirhosseinbanaei/NgiTool/internal/ui"
 	"github.com/amirhosseinbanaei/NgiTool/internal/update"
@@ -38,7 +39,10 @@ var checks = []Check{
 	{ID: "docker", Label: "Docker CLI", Run: checkDocker},
 	{ID: "daemon", Label: "Docker daemon", Run: checkDaemon},
 	{ID: "compose", Label: "Docker Compose v2", Run: checkCompose},
+	{ID: "docker-access", Label: "Docker access", Run: checkDockerAccess},
 	{ID: "ss", Label: "ss (socket owners)", Run: checkSS},
+	{ID: "front-door", Label: "Front door", Run: checkFrontDoor},
+	{ID: "configs", Label: "nginx configs", Run: checkConfigs},
 	{ID: "state", Label: "State directory", Run: checkStateDir},
 	{ID: "updates", Label: "Update source", Run: checkUpdates},
 }
@@ -55,7 +59,7 @@ func doctorCmd(e *env) *cobra.Command {
 	var asJSON bool
 	c := &cobra.Command{
 		Use:         "doctor",
-		Short:       "root, docker, compose, ss, state, updates",
+		Short:       "root, docker, compose, ss, front door, configs, state, updates",
 		Long:        "Runs every check at once and prints ✔ ok, ! warning or ✖ failed, with a fix for each line that is not ok.\nExits 1 when a check failed.",
 		Annotations: map[string]string{annGroup: "server", annSynopsis: "doctor [--json]"},
 		Args:        noArgs,
@@ -253,4 +257,69 @@ func firstLine(s string) string {
 		return s[:i]
 	}
 	return s
+}
+
+// checkDockerAccess is how far NgiTool can see containers (DISC-13).
+func checkDockerAccess(ctx context.Context, e *env) CheckResult {
+	d := discover.DockerAccess(ctx, newScanEnv(e))
+	switch d.State {
+	case "ok":
+		who := "root"
+		if os.Geteuid() != 0 {
+			who = "docker group"
+		}
+		return CheckResult{Status: ui.StatusOK, Detail: "full (" + who + ")"}
+	case "rootless", "podman":
+		return CheckResult{ui.StatusWarn, d.Detail, d.Hint}
+	case "missing":
+		return CheckResult{ui.StatusWarn, "no docker: host nginx only", d.Hint}
+	}
+	return CheckResult{ui.StatusFail, d.Detail, d.Hint}
+}
+
+// checkFrontDoor: which instance owns :443 (else :80) (DISC-15).
+func checkFrontDoor(ctx context.Context, e *env) CheckResult {
+	r := e.report(ctx, false, false)
+	if in := r.Find(r.FrontDoor); in != nil {
+		return CheckResult{Status: ui.StatusOK, Detail: in.Name + " (" + in.ID + ")"}
+	}
+	for _, o := range r.Ports {
+		if (o.Port == 443 || o.Port == 80) && o.Process != "" {
+			return CheckResult{ui.StatusWarn, fmt.Sprintf(":%d is owned by %s, not an nginx", o.Port, firstNonEmpty(o.Container, o.Process)), "ngitool scan shows every port owner"}
+		}
+	}
+	return CheckResult{ui.StatusWarn, "nothing owns :80 or :443 (only this machine is scanned)", "start an nginx on :80/:443 — ngitool scan lists what exists"}
+}
+
+// checkConfigs runs nginx -t on every instance that can be tested.
+func checkConfigs(ctx context.Context, e *env) CheckResult {
+	r := e.report(ctx, false, false)
+	senv := newScanEnv(e)
+	var bad, untested []string
+	tested := 0
+	for i := range r.Instances {
+		in := &r.Instances[i]
+		if !in.Caps.Test.OK {
+			untested = append(untested, in.Name)
+			continue
+		}
+		res, err := discover.Test(ctx, senv, in)
+		if err != nil {
+			untested = append(untested, in.Name)
+			continue
+		}
+		tested++
+		if !res.OK {
+			bad = append(bad, in.Name+": "+firstLine(res.Output))
+		}
+	}
+	switch {
+	case len(bad) > 0:
+		return CheckResult{ui.StatusFail, strings.Join(bad, "; "), "fix the file nginx names — ngitool inspect <id> shows it"}
+	case tested == 0 && len(untested) == 0:
+		return CheckResult{ui.StatusWarn, "no nginx found", "ngitool scan"}
+	case len(untested) > 0:
+		return CheckResult{ui.StatusOK, fmt.Sprintf("%d valid, %d not testable (%s)", tested, len(untested), strings.Join(untested, ", ")), ""}
+	}
+	return CheckResult{Status: ui.StatusOK, Detail: fmt.Sprintf("%d valid", tested)}
 }
