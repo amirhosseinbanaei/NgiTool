@@ -34,6 +34,28 @@ var memberSources = []memberSource{
 	{Title: "Compose services", Rows: serviceRows},
 	{Title: "Containers", Rows: containerRows},
 	{Title: "Host ports", Rows: hostPortRows},
+	{Title: "Static files", Rows: staticRows},
+}
+
+// staticNew is the checklist row "a new folder named after the host".
+const staticNew = "static:\x00new"
+
+// staticRows are the edge stack's www/ folders (EDGE-04); host nginx takes
+// an absolute directory through the manual row (static:/srv/site).
+func staticRows(st *model.State, _ *discover.Report, in *discover.Instance) []pickRow {
+	ed := edgeStackFor(st, in)
+	if ed == nil {
+		return nil
+	}
+	var rows []pickRow
+	for _, w := range (&env{}).wwwRows(st, ed.Dir) {
+		hint := "not served yet"
+		if len(w.Routes) > 0 {
+			hint = "served at " + strings.Join(w.Routes, ", ")
+		}
+		rows = append(rows, pickRow{Value: "static:" + w.Dir, Label: "www/" + w.Dir, Hint: hint})
+	}
+	return append(rows, pickRow{Value: staticNew, Label: "＋ New folder", Hint: "www/<hostname> with a placeholder page — replace it with your build"})
 }
 
 const manualRow = "\x00manual"
@@ -219,7 +241,11 @@ func pickMembers(st *model.State, rep *discover.Report, in *discover.Instance, p
 			opts = append(opts, ui.Option{Value: r.Value, Label: r.Label, Hint: r.Hint, Badge: r.Badge, Disabled: r.Disabled})
 		}
 	}
-	opts = append(opts, ui.Option{Value: manualRow, Label: ui.SymPen + " Enter an address manually…", Hint: "HOST:PORT, https://HOST, unix:/path"})
+	manualHint := "HOST:PORT, https://HOST, unix:/path"
+	if in.Kind == discover.KindHost {
+		manualHint += ", static:/dir (files)"
+	}
+	opts = append(opts, ui.Option{Value: manualRow, Label: ui.SymPen + " Enter an address manually…", Hint: manualHint})
 	var pre []string
 	for _, p := range preselected {
 		if head, _, _ := strings.Cut(p, ","); rows[stripPort(head)].Value != "" {
@@ -254,7 +280,7 @@ func pickMembers(st *model.State, rep *discover.Report, in *discover.Instance, p
 				continue
 			}
 			r := rows[v]
-			if strings.HasPrefix(v, "port:") {
+			if strings.HasPrefix(v, "port:") || strings.HasPrefix(v, "static:") {
 				specs = append(specs, v)
 				continue
 			}

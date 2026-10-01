@@ -17,6 +17,7 @@ import (
 	"github.com/amirhosseinbanaei/NgiTool/internal/discover"
 	"github.com/amirhosseinbanaei/NgiTool/internal/paths"
 	"github.com/amirhosseinbanaei/NgiTool/internal/ui"
+	"github.com/amirhosseinbanaei/NgiTool/internal/version"
 )
 
 // Exit codes.
@@ -112,6 +113,9 @@ func newRoot(e *env) *cobra.Command {
 		},
 	}
 	e.root = root
+	// `ngitool --version` prints the version like `ngitool version` does.
+	root.Version = version.Version
+	root.SetVersionTemplate("ngitool {{.Version}}\n")
 	cobra.EnableCommandSorting = false
 	root.CompletionOptions.DisableDefaultCmd = true
 	pf := root.PersistentFlags()
@@ -136,14 +140,22 @@ var commands = []func(*env) *cobra.Command{
 	inspectCmd,
 	instanceCmd,
 	routeCmd,
+	rmCmd,
+	resetCmd,
 	poolCmd,
 	appCmd,
+	edgeCmd,
+	wwwCmd,
+	certCmd,
+	certbotCmd,
+	domainCmd,
 	diffCmd,
 	applyCmd,
 	rollbackCmd,
 	testCmd,
 	reloadCmd,
 	doctorCmd,
+	migrateCmd,
 	versionCmd,
 	updateCmd,
 	completionCmd,

@@ -12,7 +12,10 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/amirhosseinbanaei/NgiTool/internal/apply"
+	"github.com/amirhosseinbanaei/NgiTool/internal/certs"
+	"github.com/amirhosseinbanaei/NgiTool/internal/cloudflare"
 	"github.com/amirhosseinbanaei/NgiTool/internal/discover"
+	"github.com/amirhosseinbanaei/NgiTool/internal/edge"
 	"github.com/amirhosseinbanaei/NgiTool/internal/execx"
 	"github.com/amirhosseinbanaei/NgiTool/internal/model"
 	"github.com/amirhosseinbanaei/NgiTool/internal/ui"
@@ -41,6 +44,8 @@ type routeOpts struct {
 	consistent, httpOnly, www, noWWW, noWebsocket, noBuffering      bool
 	strip, noStrip, upstreamVerify, connect, advanced               bool
 	keepalive                                                       int
+	dns                                                             string
+	issue                                                           certAddOpts // --issue and its flags
 }
 
 func routeAddCmd(e *env, edit bool) *cobra.Command {
@@ -81,6 +86,14 @@ func routeAddCmd(e *env, edit bool) *cobra.Command {
 	fl.IntVar(&o.keepalive, "keepalive", 0, "idle upstream connections kept per worker (LB-06)")
 	fl.StringVar(&o.errorPage, "error-page", "", "page shown when every member is down (LB-11)")
 	fl.StringVar(&o.cert, "cert", "", "a certificate already on the instance, by name or path")
+	fl.StringVar(&o.issue.kind, "issue", "", "issue a new certificate: letsencrypt, origin, custom or self-signed")
+	fl.StringVar(&o.issue.challenge, "challenge", "", "--issue letsencrypt: http (HTTP-01) or dns (DNS-01 through Cloudflare)")
+	fl.BoolVar(&o.issue.wildcard, "wildcard", false, "--issue: also *.<host>")
+	fl.StringVar(&o.issue.certFile, "cert-file", "", "--issue custom: the full chain PEM")
+	fl.StringVar(&o.issue.keyFile, "key-file", "", "--issue custom: the private key PEM")
+	fl.BoolVar(&o.issue.staging, "staging", false, "--issue letsencrypt: the staging CA")
+	fl.BoolVar(&o.issue.force, "force-preflight", false, "--issue letsencrypt: ask Let's Encrypt although the HTTP-01 preflight failed")
+	fl.StringVar(&o.dns, "dns", "", "Cloudflare DNS for the host: proxied, dns-only or skip (needs the edge stack's token)")
 	fl.BoolVar(&o.httpOnly, "http-only", false, "no certificate: serve plain HTTP")
 	fl.StringVar(&o.http, "http", "", "port 80 with a certificate: redirect (default) or serve (RP-17)")
 	fl.BoolVar(&o.www, "www", false, "also serve www.<host> (RP-01)")
@@ -107,11 +120,16 @@ func routeAddCmd(e *env, edit bool) *cobra.Command {
 
 // draft is everything the wizard collected.
 type draft struct {
-	route   model.Route
-	pool    model.Pool
-	reuse   bool   // pool already exists (--pool)
-	oldID   string // edit: the route being replaced
-	oldPool string
+	route           model.Route
+	pool            model.Pool
+	issued          *model.Cert // a certificate issued by this wizard run
+	home            *certHome
+	dnsZone         *model.Zone // the DNS step's zone, token and IP
+	dnsToken, dnsIP string
+	dnsDone         bool
+	reuse           bool   // pool already exists (--pool)
+	oldID           string // edit: the route being replaced
+	oldPool         string
 }
 
 func (e *env) routeAdd(cmd *cobra.Command, o *routeOpts, target string, edit bool) error {
@@ -177,8 +195,11 @@ func (e *env) routeAdd(cmd *cobra.Command, o *routeOpts, target string, edit boo
 		return err
 	}
 
-	// f–g. certificate and http mode
-	if err := wizardTLS(cmd, o, in, d); err != nil {
+	// DNS (Cloudflare), then f–g. certificate and http mode
+	if err := e.wizardDNS(cmd, o, st, in, d); err != nil {
+		return err
+	}
+	if err := e.wizardTLS(cmd, o, st, in, d); err != nil {
 		return err
 	}
 
@@ -192,6 +213,19 @@ func (e *env) routeAdd(cmd *cobra.Command, o *routeOpts, target string, edit boo
 		return err
 	}
 
+	// A new static folder gets a placeholder page (EDGE-04).
+	if d.pool.Static() && !o.dryRun {
+		if ed := edgeStackFor(st, in); ed != nil && !strings.HasPrefix(d.pool.Members[0].Ref, "/") {
+			made, err := edge.EnsureStatic(ed.Dir, d.pool.Members[0].Ref, d.route.Host)
+			if err != nil {
+				return err
+			}
+			if made {
+				ui.Done("www/" + d.pool.Members[0].Ref + ui.Muted(" created with a placeholder page — replace it with your build"))
+			}
+		}
+	}
+
 	// i. plan, then the transaction
 	printRoutePlan(d, in, edit)
 	summary := "route add " + d.route.ID
@@ -199,9 +233,23 @@ func (e *env) routeAdd(cmd *cobra.Command, o *routeOpts, target string, edit boo
 		summary = "route edit " + d.route.ID
 	}
 	_, err = e.change(ctx, rep, in, o.txFlags, summary, []string{d.route.ID}, func(next *model.State) error {
+		if d.issued != nil {
+			next.RemoveCert(d.issued.Instance, d.issued.Name)
+			next.Certs = append(next.Certs, *d.issued)
+		}
 		return d.applyTo(next, rep, edit)
 	})
-	return err
+	if err != nil || o.dryRun {
+		if d.issued != nil {
+			// commitOrCleanup: the route did not happen, the certificate goes
+			if rerr := e.removeCertFiles(ctx, d.home, *d.issued); rerr != nil {
+				ui.Warning("the new certificate's files stay: " + rerr.Error())
+			}
+		}
+		return err
+	}
+	e.applyDNS(ctx, d, in)
+	return nil
 }
 
 // applyTo puts the drafted route (and pool) into a fresh copy of state.
@@ -370,6 +418,12 @@ func (e *env) wizardTargets(cmd *cobra.Command, o *routeOpts, rep *discover.Repo
 			}
 		}
 	}
+	for i, sp := range specs {
+		if sp == staticNew {
+			// legacy: a domain's placeholder folder is named after the host
+			specs[i] = "static:" + d.route.Host + strings.ReplaceAll(d.route.Path, "/", "-")
+		}
+	}
 	if specs != nil {
 		keep := map[string]model.Member{}
 		for _, m := range d.pool.Members {
@@ -397,6 +451,10 @@ func (e *env) wizardTargets(cmd *cobra.Command, o *routeOpts, rep *discover.Repo
 		d.pool.Scheme = o.scheme
 	}
 	p := &d.pool
+	if p.Static() {
+		p.Method = model.RoundRobin
+		return nil
+	}
 	switch {
 	case fl.Changed("method"):
 		m, err := model.ParseMethod(o.method)
@@ -453,8 +511,10 @@ func specOf(m model.Member) string {
 	return m.Label()
 }
 
-// wizardTLS is steps f and g, plus apex + www (RP-01).
-func wizardTLS(cmd *cobra.Command, o *routeOpts, in *discover.Instance, d *draft) error {
+// wizardTLS is steps f and g, plus apex + www (RP-01). A certificate can
+// be one found on the instance, one NgiTool issued, or a new one: issued
+// right here, before the transaction, so nginx -t sees its files.
+func (e *env) wizardTLS(cmd *cobra.Command, o *routeOpts, st *model.State, in *discover.Instance, d *draft) error {
 	fl := cmd.Flags()
 	r := &d.route
 	names := r.Names()
@@ -462,28 +522,31 @@ func wizardTLS(cmd *cobra.Command, o *routeOpts, in *discover.Instance, d *draft
 		r.WWW = o.www && !o.noWWW
 		names = r.Names()
 	}
-	certs := findCerts(in)
+	cands := e.certCands(st, in)
 	switch {
 	case o.httpOnly:
 		r.TLS = nil
+	case o.issue.kind != "":
+		if err := e.newCertForRoute(cmd, o, st, in, d); err != nil {
+			return err
+		}
 	case o.cert != "":
 		var found *certCand
-		for i := range certs {
-			if certs[i].Name == o.cert || certs[i].Cert == o.cert {
-				found = &certs[i]
+		for i := range cands {
+			if cands[i].Name == o.cert || cands[i].Cert == o.cert {
+				found = &cands[i]
 			}
 		}
 		if found == nil {
-			return problemErr(model.Problem{Code: "RP-18", Msg: "no certificate " + o.cert + " on " + in.Name, Fix: "pick one of: " + certList(certs) + " — or --http-only (issuing certificates comes with prompt 5)"})
+			return problemErr(model.Problem{Code: "RP-18", Msg: "no certificate " + o.cert + " on " + in.Name, Fix: "pick one of: " + certList(cands) + " — or --issue letsencrypt|origin|custom|self-signed, or --http-only"})
 		}
 		r.TLS = &found.TLS
 	case cmd.Name() == "edit" && !ui.CanPrompt():
 	default:
-		cover := covering(certs, names)
+		cover := covering(cands, names)
 		switch {
-		case len(cover) == 1:
+		case len(cover) == 1 && !ui.CanPrompt():
 			r.TLS = &cover[0].TLS
-			ui.Plain(ui.OK(ui.SymOK) + " " + ui.Bold("Certificate") + ui.Muted(" › ") + ui.Accent(cover[0].Name) + ui.Muted("  the only one covering "+strings.Join(names, ", ")))
 		case !ui.CanPrompt():
 			r.TLS = nil
 			if len(cover) > 1 {
@@ -491,32 +554,45 @@ func wizardTLS(cmd *cobra.Command, o *routeOpts, in *discover.Instance, d *draft
 			}
 		default:
 			var opts []ui.Option
-			for _, c := range certs {
+			for _, c := range cands {
 				op := ui.Option{Value: c.Cert, Label: c.Name, Hint: certHint(c)}
 				if len(c.Names) > 0 && len(covering([]certCand{c}, names)) == 0 {
 					op.Disabled = "does not cover " + strings.Join(names, ", ")
 				}
 				opts = append(opts, op)
 			}
-			opts = append(opts, ui.Option{Value: "", Label: "HTTP only", Hint: "no certificate on this route (issuing one comes with prompt 5)"})
+			opts = append(opts,
+				ui.Option{Value: "\x00issue", Label: "Issue a new certificate…", Hint: "Let's Encrypt, Cloudflare Origin CA, self-signed — or import one"},
+				ui.Option{Value: "", Label: "HTTP only", Hint: "no certificate on this route"})
 			def := ""
-			if r.TLS != nil {
+			switch {
+			case r.TLS != nil:
 				def = r.TLS.Cert
+			case len(cover) > 0:
+				def = cover[0].Cert
+			case len(cands) == 0:
+				def = "\x00issue"
 			}
 			v, err := ui.Select(ui.SelectOpts{Title: "Certificate", Options: opts, Default: def})
 			if err != nil {
 				return err
 			}
 			r.TLS = nil
-			for i := range certs {
-				if certs[i].Cert == v && v != "" {
-					r.TLS = &certs[i].TLS
+			if v == "\x00issue" {
+				if err := e.newCertForRoute(cmd, o, st, in, d); err != nil {
+					return err
+				}
+				break
+			}
+			for i := range cands {
+				if cands[i].Cert == v && v != "" {
+					r.TLS = &cands[i].TLS
 				}
 			}
 		}
 	}
 	// RP-01: an apex host can serve www too.
-	if r.Path == "" && strings.Count(r.Host, ".") == 1 && !fl.Changed("www") && !fl.Changed("no-www") && ui.CanPrompt() &&
+	if r.Path == "" && strings.Count(r.Host, ".") == 1 && !fl.Changed("www") && !fl.Changed("no-www") && ui.CanPrompt() && d.issued == nil &&
 		(r.TLS == nil || model.Covers(r.TLS.Names, "www."+r.Host)) {
 		yes, err := ui.Confirm("Also serve www."+r.Host+"?", "both names on one server (RP-01)", r.WWW)
 		if err != nil {
@@ -544,7 +620,161 @@ func wizardTLS(cmd *cobra.Command, o *routeOpts, in *discover.Instance, d *draft
 	case r.HTTP == "":
 		r.HTTP = model.HTTPRedirect
 	}
+	if r.HTTP == model.HTTPServe && r.TLS != nil && r.DNS == model.DNSProxied {
+		// cli/src/flows.mjs:318-322
+		ui.Warning(r.Host + " is proxied: Cloudflare's \"Always Use HTTPS\" still redirects http:// before it reaches this server — turn it off to use HTTP")
+		ui.Hint("browsers that saw HTTPS-only (HSTS) before keep upgrading until they next load https:// — which now tells them to stop")
+	}
 	return nil
+}
+
+// certCands are the certificates a route on in can use: the ones NgiTool
+// issued for it, then the ones found in its config and cert directories.
+func (e *env) certCands(st *model.State, in *discover.Instance) []certCand {
+	var out []certCand
+	seen := map[string]bool{}
+	for _, c := range st.Certs {
+		if c.Instance != in.ID {
+			continue
+		}
+		cc := certCand{TLS: *c.TLS(), Source: certs.Label(c.Kind, c.Challenge)}
+		if info, err := certs.InspectFile(c.HostCert); err == nil {
+			cc.Names, cc.Expires = info.Names, info.NotAfter
+		}
+		seen[c.Cert] = true
+		out = append(out, cc)
+	}
+	for _, c := range findCerts(in) {
+		if !seen[c.Cert] {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
+// newCertForRoute asks for (or reads) a new certificate's kind, issues it
+// after a confirm, and puts it on the route; the draft remembers it so a
+// failed transaction deletes its files again.
+func (e *env) newCertForRoute(cmd *cobra.Command, o *routeOpts, st *model.State, in *discover.Instance, d *draft) error {
+	ctx := cmd.Context()
+	h, err := e.homeOf(ctx, st, in)
+	if err != nil {
+		return err
+	}
+	names := d.route.Names()
+	if o.issue.wildcard {
+		names = append(names, "*."+d.route.Host)
+	}
+	if d.route.Path != "" {
+		names = []string{d.route.Host}
+	}
+	rq, err := e.certRequest(ctx, st, h, names, d.route.DNS, &o.issue)
+	if err != nil {
+		return err
+	}
+	ui.Plan("New certificate", [][2]string{{"Name", rq.Name}, {"Kind", certs.Label(rq.Kind, rq.Challenge)}, {"Names", strings.Join(rq.Names, ", ")}})
+	if ok, err := ui.Sure(e.yes, "Issue it now?", "the route is written after it exists; if that fails, the certificate is deleted again"); err != nil || !ok {
+		if err == nil {
+			err = errCancelled
+		}
+		return err
+	}
+	// HTTP-01 is validated against DNS: the record must exist first.
+	if rq.Kind == certs.LetsEncrypt && rq.Challenge == certs.HTTP01 && d.dnsZone != nil {
+		e.applyDNS(ctx, d, in)
+		d.dnsDone = true
+	}
+	c, err := e.issue(ctx, st, h, rq)
+	if err != nil {
+		return err
+	}
+	d.issued, d.home = c, h
+	d.route.TLS = c.TLS()
+	return nil
+}
+
+// wizardDNS is the Cloudflare step: only when the instance's edge stack
+// has a token, only for whole-host routes. proxied, dns-only or skip.
+func (e *env) wizardDNS(cmd *cobra.Command, o *routeOpts, st *model.State, in *discover.Instance, d *draft) error {
+	ctx := cmd.Context()
+	r := &d.route
+	if r.Path != "" {
+		return nil
+	}
+	ed := edgeStackFor(st, in)
+	token := ""
+	if ed != nil {
+		token = edge.ReadToken(ed.Dir)
+	}
+	if token == "" {
+		if o.dns != "" && o.dns != model.DNSSkip {
+			return &UsageError{Msg: "--dns needs the edge stack's Cloudflare token (ngitool edge init)"}
+		}
+		return nil
+	}
+	mode := o.dns
+	switch mode {
+	case "", model.DNSProxied, model.DNSOnly, model.DNSSkip:
+	default:
+		return &UsageError{Msg: "--dns is proxied, dns-only or skip"}
+	}
+	ip := edge.ReadEnv(ed.Dir)["SERVER_IP"]
+	zone := zoneFor(ctx, st, r.Host, token)
+	if mode == "" {
+		switch {
+		case !ui.CanPrompt():
+			mode = firstNonEmpty(r.DNS, model.DNSSkip)
+		case zone == nil:
+			ui.Warning(r.Host + " is not in this Cloudflare account — DNS records are not set (add the record yourself)")
+			mode = model.DNSSkip
+		case ip == "":
+			ui.Warning("SERVER_IP is not set in " + edge.Layout{Dir: ed.Dir}.Env() + " — add the DNS record for " + r.Host + " yourself (or run ngitool edge init)")
+			mode = model.DNSSkip
+		default:
+			v, err := ui.Select(ui.SelectOpts{Title: "DNS for " + r.Host, Note: "an A record → " + ip + " in zone " + zone.Name, Default: firstNonEmpty(r.DNS, model.DNSProxied), Options: []ui.Option{
+				{Value: model.DNSProxied, Label: "Proxied (orange cloud)", Hint: "Cloudflare in front: caching, DDoS protection, hides this server's IP"},
+				{Value: model.DNSOnly, Label: "DNS only", Hint: "visitors connect straight to this server"},
+				{Value: model.DNSSkip, Label: "Leave DNS alone", Hint: "you manage the record yourself"},
+			}})
+			if err != nil {
+				return err
+			}
+			mode = v
+		}
+	}
+	if mode != model.DNSSkip && (zone == nil || ip == "") {
+		return errors.New("--dns " + mode + ": " + r.Host + " needs a Cloudflare zone in this account and SERVER_IP in .env")
+	}
+	r.DNS = mode
+	if mode != model.DNSSkip {
+		d.dnsZone, d.dnsToken, d.dnsIP = zone, token, ip
+	}
+	if domain := certs.DomainOf(r.Host, st.DomainNames()); domain != "" {
+		if note := certs.WildcardDepthNote(r.Host, st.DomainNames()); note != "" {
+			ui.Warning(note)
+		}
+	}
+	return nil
+}
+
+// applyDNS points the route's host (and www) at SERVER_IP.
+func (e *env) applyDNS(ctx context.Context, d *draft, in *discover.Instance) {
+	if d.dnsZone == nil || d.dnsDone {
+		return
+	}
+	cf := cloudflare.New(d.dnsToken)
+	for _, h := range d.route.Names() {
+		_ = ui.Task("DNS "+h+" → "+d.dnsIP+" ("+d.route.DNS+")", func(t *ui.TaskCtl) error {
+			res, err := cf.UpsertA(ctx, d.dnsZone.ID, h, d.dnsIP, d.route.DNS == model.DNSProxied)
+			if err != nil {
+				ui.Warning("DNS not changed: " + err.Error())
+				return nil
+			}
+			t.Update("DNS " + h + " → " + d.dnsIP + " (" + d.route.DNS + ") " + ui.Muted(res))
+			return nil
+		})
+	}
+	d.dnsDone = true
 }
 
 func certHint(c certCand) string {
@@ -775,9 +1005,12 @@ func printRoutePlan(d *draft, in *discover.Instance, edit bool) {
 		{"Route", ui.Bold(strings.Join(r.Names(), " ")) + r.Path},
 		{"Instance", in.Name + ui.Muted("  "+in.ID)},
 	}
-	if len(p.Members) == 1 {
+	switch {
+	case p.Static():
+		pairs = append(pairs, [2]string{"Target", "files in " + p.Members[0].Ref + ui.Muted("  static (EDGE-04)")})
+	case len(p.Members) == 1:
 		pairs = append(pairs, [2]string{"Target", p.Members[0].Label() + ui.Muted("  "+p.Members[0].Kind)})
-	} else {
+	default:
 		var ms []string
 		for _, m := range p.Members {
 			ms = append(ms, m.Label())
@@ -792,7 +1025,10 @@ func printRoutePlan(d *draft, in *discover.Instance, edit bool) {
 	} else {
 		pairs = append(pairs, [2]string{"TLS", ui.Muted("none — HTTP only")})
 	}
-	if r.Path != "" {
+	if r.DNS != "" && r.DNS != model.DNSSkip {
+		pairs = append(pairs, [2]string{"DNS", r.DNS + ui.Muted("  Cloudflare A record, after the route is in place")})
+	}
+	if r.Path != "" && !p.Static() {
 		pairs = append(pairs, [2]string{"Path", map[bool]string{true: "stripped", false: "kept"}[r.Options.StripPrefix]})
 	}
 	var opts []string

@@ -193,7 +193,7 @@ func mustRead(p string) string {
 func layoutNote(l string) string {
 	switch l {
 	case model.LayoutEdge:
-		return "the edge stack's own conf/sites and conf/locations; edge CLI files are left alone"
+		return "the edge stack's own conf/sites and conf/locations; files of the legacy edge CLI are left alone (ngitool migrate edge imports them)"
 	case model.LayoutHost:
 		return "files under /etc/nginx/ngitool, one managed file in conf.d"
 	}

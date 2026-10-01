@@ -44,7 +44,7 @@ func (s *Scanner) findings() {
 func (s *Scanner) systemFindings() {
 	if len(s.inst) == 0 {
 		s.find(SevInfo, "DISC-01", "no nginx found on this machine (only this machine is scanned, DISC-17)",
-			"the bundled edge stack (compose.yaml in the NgiTool repository) can be your front door")
+			"the bundled edge stack can be your front door: ngitool edge init")
 	}
 	if s.env.Euid != 0 {
 		s.find(SevWarn, "DISC-14", "not running as root: this is a partial view ("+strconv.Itoa(len(s.rep.ReadFailures))+" reads failed)",

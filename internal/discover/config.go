@@ -224,7 +224,7 @@ func (s *Scanner) writable(in *Instance, isOther bool, other string, invalid boo
 		notes = append(notes, "/etc/nginx/templates is mounted: edits go to the templates, ${VAR} kept (CONF-08)")
 	}
 	if in.ManagedBy == ManagedEdge {
-		notes = append(notes, "the edge CLI's files (sites/, snippets/) are left alone")
+		notes = append(notes, "the legacy edge CLI's files (# Managed by edge) are left alone until ngitool migrate edge imports them")
 	}
 	return yes(strings.Join(notes, "; "))
 }

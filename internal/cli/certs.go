@@ -14,8 +14,8 @@ import (
 	"github.com/amirhosseinbanaei/NgiTool/internal/render"
 )
 
-// certCand is a certificate that already exists on an instance. Issuing
-// certificates is prompt 5; here a route can only attach one.
+// certCand is a certificate that already exists on an instance: found in
+// its config or certificate directories, or issued by NgiTool (cert add).
 type certCand struct {
 	model.TLS
 	Expires time.Time
