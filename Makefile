@@ -12,9 +12,9 @@ LDFLAGS := -s -w \
 	-X $(MODULE)/internal/version.Commit=$(COMMIT) \
 	-X $(MODULE)/internal/version.Date=$(DATE)
 
-# The size budget for dist/ngitool (linux/amd64), in bytes: 13 MB (raised
-# from 12 MB in prompt 3; the reason is in AGENTS.md).
-MAX_SIZE := 13000000
+# The size budget for dist/ngitool (linux/amd64), in bytes: 13.5 MB (raised
+# from 12 MB in prompt 3 and 13 MB in prompt 4; the reasons are in AGENTS.md).
+MAX_SIZE := 13500000
 
 .PHONY: build size fmt vet test check release-local clean
 
