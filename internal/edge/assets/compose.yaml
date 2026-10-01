@@ -1,0 +1,68 @@
+# NgiTool edge stack — the single entry point for every project on this server.
+#
+#   nginx    public :80/:443, routes by hostname or path to the apps
+#   certbot  issues and renews Let's Encrypt certs every 12h — HTTP-01 through
+#            nginx's :80 (data/acme) or DNS-01 through Cloudflare
+#
+# Apps never publish ports. Containers share a Docker network with nginx
+# (EDGE_NETWORK, created by `ngitool edge init`); host processes listen on its
+# gateway IP. Manage everything with `ngitool` — this file rarely needs editing
+# (`ngitool edge upgrade-assets` shows what a newer NgiTool would change).
+
+name: edge
+
+services:
+  nginx:
+    image: nginx:stable-alpine
+    restart: unless-stopped
+    # start.sh runs nginx with conf/nginx.conf plus a 6h reload loop so renewed
+    # certs are picked up without touching the host.
+    command: ["/bin/sh", "/etc/nginx/edge/start.sh"]
+    ports:
+      - "${HTTP_PORT:-80}:80"
+      - "${HTTPS_PORT:-443}:443"
+    volumes:
+      - ./conf:/etc/nginx/edge:ro             # all nginx config (dir mount: edits are seen live)
+      - ./www:/var/www:ro                     # static sites
+      - ./data/letsencrypt:/etc/letsencrypt:ro  # Let's Encrypt (certbot)
+      - ./data/certs:/etc/edge-certs:ro         # Origin CA, custom and self-signed certs
+      - ./data/acme:/var/acme:ro                # HTTP-01 challenge files certbot writes
+    ulimits:
+      nofile: { soft: 65535, hard: 65535 }
+    read_only: true
+    tmpfs:
+      - /var/cache/nginx
+      - /var/run
+      - /tmp
+    networks:
+      - edge
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    logging: &logging
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"
+
+  certbot:
+    image: certbot/dns-cloudflare:latest
+    restart: unless-stopped
+    entrypoint:
+      - /bin/sh
+      - -c
+      - "trap exit TERM; while :; do certbot renew --quiet; sleep 12h & wait $${!}; done"
+    volumes:
+      - ./data/letsencrypt:/etc/letsencrypt
+      - ./data/acme:/var/acme                   # webroot for HTTP-01 (served by nginx on :80)
+      - ./secrets/cloudflare.ini:/secrets/cloudflare.ini:ro
+    logging: *logging
+
+networks:
+  # External: it outlives `docker compose down` here, and app projects join it
+  # the same way (networks: <name>: external: true).
+  edge:
+    name: ${EDGE_NETWORK:-edge}
+    external: true

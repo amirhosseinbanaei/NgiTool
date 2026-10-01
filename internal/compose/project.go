@@ -623,15 +623,23 @@ func ParsePSJSON(out string) []Ctr {
 	return cs
 }
 
+// EdgeMarker is the file `ngitool edge init` (and the migration) writes
+// into an edge stack's directory.
+const EdgeMarker = ".ngitool-edge"
+
 // EdgeStack reports whether dir is the bundled edge stack: compose.yaml,
-// conf/nginx.conf and the edge CLI (discovery's rule).
+// conf/nginx.conf, and NgiTool's marker or the legacy edge CLI next to them
+// (discovery's rule).
 func EdgeStack(dir string) bool {
+	if dir == "" {
+		return false
+	}
 	for _, p := range []string{"compose.yaml", "conf/nginx.conf"} {
 		if _, err := os.Stat(filepath.Join(dir, p)); err != nil {
 			return false
 		}
 	}
-	for _, p := range []string{"edge", "cli/src"} {
+	for _, p := range []string{EdgeMarker, "edge", "cli/src"} {
 		if _, err := os.Stat(filepath.Join(dir, p)); err == nil {
 			return true
 		}

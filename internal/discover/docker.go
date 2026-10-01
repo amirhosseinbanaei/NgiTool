@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/amirhosseinbanaei/NgiTool/internal/compose"
 	"github.com/amirhosseinbanaei/NgiTool/internal/driver"
 	"github.com/amirhosseinbanaei/NgiTool/internal/execx"
 	"github.com/amirhosseinbanaei/NgiTool/internal/nginxconf"
@@ -344,24 +345,9 @@ func (s *Scanner) candidate(c *ctr) bool {
 	return nginxWordRE.MatchString(strings.Join(append(append([]string{}, c.Entrypoint...), c.Cmd...), " "))
 }
 
-// edgeLayout reports whether dir is NgiTool's edge stack: compose.yaml,
-// conf/nginx.conf and the edge CLI next to them.
-func edgeLayout(dir string) bool {
-	if dir == "" {
-		return false
-	}
-	for _, f := range []string{"compose.yaml", "conf/nginx.conf"} {
-		if _, err := os.Stat(filepath.Join(dir, f)); err != nil {
-			return false
-		}
-	}
-	for _, f := range []string{"edge", "cli/src"} {
-		if _, err := os.Stat(filepath.Join(dir, f)); err == nil {
-			return true
-		}
-	}
-	return false
-}
+// edgeLayout reports whether dir is NgiTool's edge stack (compose's rule:
+// compose.yaml, conf/nginx.conf and the marker or the legacy edge CLI).
+func edgeLayout(dir string) bool { return compose.EdgeStack(dir) }
 
 func (s *Scanner) addContainer(ctx context.Context, c *ctr) {
 	in := &Instance{
