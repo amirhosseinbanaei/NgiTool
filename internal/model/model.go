@@ -25,6 +25,10 @@ const (
 	KindHostPort  = "host-port"
 	KindAddress   = "address"
 	KindUnix      = "unix"
+	// KindStatic serves files instead of proxying: Ref is a folder under
+	// the edge stack's www/, or an absolute directory on a host instance
+	// (EDGE-04).
+	KindStatic = "static"
 )
 
 // Balancing methods (LB-01). One per pool.
@@ -87,6 +91,8 @@ func (m Member) Label() string {
 		return "unix:" + m.Ref
 	case KindHostPort:
 		return "host:" + strconv.Itoa(m.Port)
+	case KindStatic:
+		return "static:" + m.Ref
 	}
 	return hostPort(m.Ref, m.Port)
 }
@@ -164,6 +170,9 @@ type Pool struct {
 // Upstream is the nginx name of the pool (LB-13).
 func (p Pool) Upstream() string { return "ngt_" + strings.ReplaceAll(p.Name, "-", "_") }
 
+// Static reports whether the pool serves files: one static member.
+func (p Pool) Static() bool { return len(p.Members) == 1 && p.Members[0].Kind == KindStatic }
+
 // Active are the members that take traffic now (not down, not backup).
 func (p Pool) Active() []Member {
 	var out []Member
@@ -206,14 +215,17 @@ func (p Pool) Member(s string) int {
 	return -1
 }
 
-// TLS is a certificate that already exists on the instance, by the paths
-// nginx sees. Issuing certificates is prompt 5.
+// TLS is the certificate of a route, by the paths nginx sees: one that was
+// found on the instance, or one NgiTool issued (State.Certs).
 type TLS struct {
 	Name string `json:"name"`
 	Cert string `json:"cert"`
 	Key  string `json:"key"`
 	// Names are the DNS names the certificate covers, when known.
 	Names []string `json:"names,omitempty"`
+	// AOP: Authenticated Origin Pulls — only Cloudflare may connect (the
+	// edge stack's snippets/cloudflare-aop.conf). Set per certificate.
+	AOP bool `json:"aop,omitempty"`
 }
 
 // Header is one extra request header sent upstream.
@@ -249,14 +261,17 @@ func DefaultOptions() Options { return Options{WebSocket: true, Buffering: true}
 
 // Route sends a host, or a path of it, to a pool.
 type Route struct {
-	ID       string   `json:"id"` // host, or host/path
-	Instance string   `json:"instance"`
-	Host     string   `json:"host"`
-	Path     string   `json:"path,omitempty"` // "" is the whole host
-	WWW      bool     `json:"www,omitempty"`  // also serve www.<host> (RP-01)
-	Pool     string   `json:"pool"`
-	Enabled  bool     `json:"enabled"`
-	HTTP     string   `json:"http"`          // redirect or serve (RP-17)
+	ID       string `json:"id"` // host, or host/path
+	Instance string `json:"instance"`
+	Host     string `json:"host"`
+	Path     string `json:"path,omitempty"` // "" is the whole host
+	WWW      bool   `json:"www,omitempty"`  // also serve www.<host> (RP-01)
+	Pool     string `json:"pool"`
+	Enabled  bool   `json:"enabled"`
+	HTTP     string `json:"http"` // redirect or serve (RP-17)
+	// DNS is how the host's Cloudflare record is kept: proxied, dns-only,
+	// or skip / "" (NgiTool leaves DNS alone).
+	DNS      string   `json:"dns,omitempty"`
 	TLS      *TLS     `json:"tls,omitempty"` // nil: plain HTTP only
 	Options  Options  `json:"options"`
 	Extra    []string `json:"extra,omitempty"` // adopted hand edits (APPLY-05)
@@ -298,6 +313,70 @@ type Adopted struct {
 	At       string   `json:"adoptedAt"`
 }
 
+// DNS modes of a route's Cloudflare record.
+const (
+	DNSProxied = "proxied"
+	DNSOnly    = "dns-only"
+	DNSSkip    = "skip"
+)
+
+// Cert is a certificate NgiTool issued or imported (prompt 5), on one
+// instance. Kind and Challenge are internal/certs' constants.
+type Cert struct {
+	Name      string   `json:"name"`
+	Instance  string   `json:"instance"`
+	Kind      string   `json:"kind"`
+	Challenge string   `json:"challenge,omitempty"` // letsencrypt: http or dns
+	Names     []string `json:"names"`
+	AOP       bool     `json:"aop,omitempty"`
+	// Cert and Key are the paths nginx sees; HostCert and HostKey the same
+	// files on this machine.
+	Cert     string `json:"cert"`
+	Key      string `json:"key"`
+	HostCert string `json:"hostCert"`
+	HostKey  string `json:"hostKey"`
+	// Certbot is where a Let's Encrypt certificate is renewed: "stack" (the
+	// edge stack's certbot container) or "host" (certbot on this machine,
+	// CERT-05) with Authenticator webroot or nginx.
+	Certbot       string `json:"certbot,omitempty"`
+	Authenticator string `json:"authenticator,omitempty"`
+	Webroot       string `json:"webroot,omitempty"`
+	Added         string `json:"added,omitempty"`
+}
+
+// TLS is the cert as a route attaches it.
+func (c Cert) TLS() *TLS {
+	return &TLS{Name: c.Name, Cert: c.Cert, Key: c.Key, Names: append([]string(nil), c.Names...), AOP: c.AOP}
+}
+
+// Zone is a Cloudflare zone a domain lives in.
+type Zone struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+}
+
+// Domain is a zone NgiTool keeps DNS records in, with its default
+// certificate (the legacy edge.json "domains").
+type Domain struct {
+	Name     string `json:"name"`
+	Instance string `json:"instance,omitempty"`
+	Zone     *Zone  `json:"zone,omitempty"`
+	Cert     string `json:"cert,omitempty"`
+	Added    string `json:"added,omitempty"`
+}
+
+// Edge is an edge stack NgiTool runs: its directory and compose project.
+// Its nginx is the instance "edge:<dir>", adopted like any other.
+type Edge struct {
+	Dir      string `json:"dir"`
+	Project  string `json:"project"`
+	Instance string `json:"instance"`
+	Added    string `json:"added,omitempty"`
+}
+
+// EdgeInstanceID is the instance id discovery gives an edge stack's nginx.
+func EdgeInstanceID(dir string) string { return "edge:" + dir }
+
 // State is state.json.
 type State struct {
 	Schema    int           `json:"schema"`
@@ -305,6 +384,93 @@ type State struct {
 	Pools     []Pool        `json:"pools"`
 	Routes    []Route       `json:"routes"`
 	Apps      []compose.App `json:"apps"`
+	Certs     []Cert        `json:"certs"`
+	Domains   []Domain      `json:"domains"`
+	Edges     []Edge        `json:"edges"`
+}
+
+// Cert returns the certificate named name on instance, or nil.
+func (s *State) Cert(instance, name string) *Cert {
+	for i := range s.Certs {
+		if s.Certs[i].Name == name && (instance == "" || s.Certs[i].Instance == instance) {
+			return &s.Certs[i]
+		}
+	}
+	return nil
+}
+
+// RemoveCert drops a certificate by instance and name.
+func (s *State) RemoveCert(instance, name string) {
+	out := s.Certs[:0]
+	for _, c := range s.Certs {
+		if !(c.Name == name && c.Instance == instance) {
+			out = append(out, c)
+		}
+	}
+	s.Certs = out
+}
+
+// CertUsers are the ids of the routes on instance that use certificate
+// name, sorted.
+func (s *State) CertUsers(instance, name string) []string {
+	var ids []string
+	for _, r := range s.Routes {
+		if r.Instance == instance && r.TLS != nil && r.TLS.Name == name {
+			ids = append(ids, r.ID)
+		}
+	}
+	sort.Strings(ids)
+	return ids
+}
+
+// Domain returns the domain named name, or nil.
+func (s *State) Domain(name string) *Domain {
+	for i := range s.Domains {
+		if s.Domains[i].Name == name {
+			return &s.Domains[i]
+		}
+	}
+	return nil
+}
+
+// RemoveDomain drops a domain by name.
+func (s *State) RemoveDomain(name string) {
+	out := s.Domains[:0]
+	for _, d := range s.Domains {
+		if d.Name != name {
+			out = append(out, d)
+		}
+	}
+	s.Domains = out
+}
+
+// DomainNames are every domain's name.
+func (s *State) DomainNames() []string {
+	var out []string
+	for _, d := range s.Domains {
+		out = append(out, d.Name)
+	}
+	return out
+}
+
+// EdgeOf returns the edge stack whose nginx is instance, or nil.
+func (s *State) EdgeOf(instance string) *Edge {
+	for i := range s.Edges {
+		if s.Edges[i].Instance == instance {
+			return &s.Edges[i]
+		}
+	}
+	return nil
+}
+
+// EdgeAt returns the edge stack in dir, or nil.
+func (s *State) EdgeAt(dir string) *Edge {
+	for i := range s.Edges {
+		if s.Edges[i].Dir == dir {
+			return &s.Edges[i]
+		}
+	}
+	return nil
 }
 
 // App returns the linked app named name, or nil.
@@ -441,6 +607,18 @@ func (s *State) PoolsOn(instance string) []Pool {
 func (s *State) Clone() *State {
 	c := &State{Schema: s.Schema}
 	c.Instances = append([]Adopted{}, s.Instances...)
+	c.Edges = append([]Edge(nil), s.Edges...)
+	for _, ct := range s.Certs {
+		ct.Names = append([]string(nil), ct.Names...)
+		c.Certs = append(c.Certs, ct)
+	}
+	for _, d := range s.Domains {
+		if d.Zone != nil {
+			z := *d.Zone
+			d.Zone = &z
+		}
+		c.Domains = append(c.Domains, d)
+	}
 	for _, a := range s.Apps {
 		a.Files = append([]string(nil), a.Files...)
 		a.Profiles = append([]string(nil), a.Profiles...)
@@ -482,6 +660,7 @@ func (s *State) Clone() *State {
 	for _, r := range s.Routes {
 		if r.TLS != nil {
 			t := *r.TLS
+			t.Names = append([]string(nil), t.Names...)
 			r.TLS = &t
 		}
 		if u := r.Options.UpstreamTLS; u != nil {

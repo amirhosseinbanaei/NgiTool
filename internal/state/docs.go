@@ -6,7 +6,7 @@ import "github.com/amirhosseinbanaei/NgiTool/internal/paths"
 // number whenever a document's shape changes (edge case SYS-07).
 const (
 	ConfigSchema = 1
-	StateSchema  = 3
+	StateSchema  = 4
 )
 
 // Config is /etc/ngitool/config.json.
@@ -55,6 +55,15 @@ var (
 		2: func(doc map[string]any) error {
 			if _, ok := doc["apps"]; !ok {
 				doc["apps"] = []any{}
+			}
+			return nil
+		},
+		// 3 → 4 (prompt 5): certificates, domains and edge stacks appear, empty.
+		3: func(doc map[string]any) error {
+			for _, k := range []string{"certs", "domains", "edges"} {
+				if _, ok := doc[k]; !ok {
+					doc[k] = []any{}
+				}
 			}
 			return nil
 		},

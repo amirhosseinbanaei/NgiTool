@@ -5,6 +5,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -376,7 +377,7 @@ func TestUnixSocketMembers(t *testing.T) {
 	}
 }
 
-func TestStateSchema2GetsApps(t *testing.T) {
+func TestStateSchema2GetsAppsAndCerts(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("NGITOOL_ROOT", dir)
 	p := paths.Get()
@@ -387,8 +388,8 @@ func TestStateSchema2GetsApps(t *testing.T) {
 		t.Fatal(err)
 	}
 	st, err := Load(p)
-	if err != nil || st.Schema != 3 || st.Apps == nil {
-		t.Fatalf("2 → 3: %+v %v", st, err)
+	if err != nil || st.Schema != 4 || st.Apps == nil || st.Certs == nil || st.Domains == nil || st.Edges == nil {
+		t.Fatalf("2 → 4: %+v %v", st, err)
 	}
 	st.Apps = append(st.Apps, compose.App{Name: "shop", Attached: map[string]compose.Attach{"web": {Network: "edge", Keys: []string{"default"}}}})
 	c := st.Clone()
@@ -399,5 +400,82 @@ func TestStateSchema2GetsApps(t *testing.T) {
 	m := Member{Kind: KindService, Ref: "shop/web"}
 	if !m.OfApp(compose.App{Name: "x", Project: "shop"}, "web") || m.OfApp(compose.App{Name: "x", Project: "shop"}, "db") {
 		t.Error("OfApp")
+	}
+}
+
+// legacy: "parseTarget normalises scheme, case and slashes" and
+// "validatePath refuses the root and odd characters". The root "/" is the
+// whole host in NgiTool (a path route needs a path), not an error.
+func TestLegacyTargets(t *testing.T) {
+	for in, want := range map[string][2]string{
+		"https://Example.com/admin/": {"example.com", "/admin"},
+		"api.example.com":            {"api.example.com", ""},
+		"example.com/":               {"example.com", ""},
+		"example.com/api/v1":         {"example.com", "/api/v1"},
+	} {
+		h, p, err := ParseTarget(in)
+		if err != nil || h != want[0] || p != want[1] {
+			t.Errorf("ParseTarget(%q) = %q %q %v", in, h, p, err)
+		}
+	}
+	if _, _, err := ParseTarget("bad host"); err == nil {
+		t.Error("invalid hostname accepted")
+	}
+	if _, _, err := ParseTarget("example.com/a b"); err == nil || !strings.Contains(err.Error(), "invalid path") {
+		t.Errorf("invalid path: %v", err)
+	}
+}
+
+// legacy: "sourceFromFlags builds each source type" — every legacy source
+// is a member spec: app, container, port, static. Two sources at once were
+// an error there; here two --to make a pool.
+func TestLegacySourcesAreMembers(t *testing.T) {
+	for spec, want := range map[string]Member{
+		"app:shop/web:3000":              {Kind: KindService, App: "shop", Ref: "/web", Port: 3000},
+		"container:my-app:3000":          {Kind: KindContainer, Ref: "my-app", Host: "my-app", Port: 3000},
+		"port:3001":                      {Kind: KindHostPort, Port: 3001},
+		"static:www/blog/":               {Kind: KindStatic, Ref: "blog"},
+		"static:/srv/site/":              {Kind: KindStatic, Ref: "/srv/site"},
+		"service:shop/web:3000":          {Kind: KindService, Ref: "shop/web", Port: 3000},
+		"container:my-app:3000,weight=2": {Kind: KindContainer, Ref: "my-app", Host: "my-app", Port: 3000, Weight: 2},
+	} {
+		m, _, err := ParseMember(spec)
+		if err != nil || !reflect.DeepEqual(m, want) {
+			t.Errorf("ParseMember(%q) = %+v %v, want %+v", spec, m, err, want)
+		}
+	}
+	for _, bad := range []string{"static:../etc", "static:", "app:shop", "port:abc"} {
+		if _, _, err := ParseMember(bad); err == nil {
+			t.Errorf("ParseMember(%q) accepted", bad)
+		}
+	}
+	if (Member{Kind: KindStatic, Ref: "docs"}).Label() != "static:docs" {
+		t.Error("static label")
+	}
+}
+
+// EDGE-04: a static route serves one folder, on the edge stack or host
+// nginx only.
+func TestStaticMembers(t *testing.T) {
+	st := &State{}
+	p := Pool{Name: "s", Instance: "edge:/srv/edge", Method: RoundRobin, Scheme: "http",
+		Members: []Member{{Kind: KindStatic, Ref: "site"}, {Kind: KindContainer, Ref: "web", Port: 80}}}
+	st.Pools = []Pool{p}
+	rep := &discover.Report{Instances: []discover.Instance{{ID: "edge:/srv/edge", Kind: discover.KindEdge,
+		Mounts: []discover.Mount{{Type: "bind", Source: t.TempDir(), Dest: "/var/www"}}},
+		{ID: "ctr:front", Kind: discover.KindContainer, Name: "front"}}}
+	if ps := CheckPool(st, rep, &st.Pools[0]); !has(ps, "EDGE-04", true) {
+		t.Errorf("static with other members: %+v", ps)
+	}
+	st.Pools[0].Members = st.Pools[0].Members[:1]
+	if !st.Pools[0].Static() {
+		t.Error("one static member is a static pool")
+	}
+	if ps := CheckPool(st, rep, &st.Pools[0]); !has(ps, "EDGE-04", false) || has(ps, "EDGE-04", true) {
+		t.Errorf("missing folder is a warning: %+v", ps)
+	}
+	st.Pools[0].Instance = "ctr:front"
+	if ps := CheckPool(st, rep, &st.Pools[0]); !has(ps, "EDGE-04", true) {
+		t.Errorf("a plain container cannot serve static routes: %+v", ps)
 	}
 }

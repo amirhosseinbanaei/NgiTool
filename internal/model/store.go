@@ -30,5 +30,14 @@ func Save(p paths.Paths, st *State) error {
 	if st.Apps == nil {
 		st.Apps = []compose.App{}
 	}
+	if st.Certs == nil {
+		st.Certs = []Cert{}
+	}
+	if st.Domains == nil {
+		st.Domains = []Domain{}
+	}
+	if st.Edges == nil {
+		st.Edges = []Edge{}
+	}
 	return state.StateStore(p).Save(st)
 }

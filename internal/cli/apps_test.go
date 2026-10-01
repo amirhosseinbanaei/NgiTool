@@ -16,6 +16,7 @@ import (
 	"github.com/amirhosseinbanaei/NgiTool/internal/discover"
 	"github.com/amirhosseinbanaei/NgiTool/internal/execx"
 	"github.com/amirhosseinbanaei/NgiTool/internal/model"
+	"github.com/amirhosseinbanaei/NgiTool/internal/state"
 	"github.com/amirhosseinbanaei/NgiTool/internal/ui"
 )
 
@@ -125,7 +126,7 @@ func TestAppLinkByFlagsAndList(t *testing.T) {
 	if a == nil || a.Project != "shop" || a.WorkingDir != dir || len(a.Files) != 2 || a.Files[1] != filepath.Join(dir, "compose.prod.yaml") || a.LinkedAt == "" {
 		t.Fatalf("state: %+v", st.Apps)
 	}
-	if st.Schema != 3 {
+	if st.Schema != state.StateSchema {
 		t.Errorf("schema %d", st.Schema)
 	}
 	if out := run(t, e, buf, ExitOK, "app", "link", dir); !strings.Contains(out, "already linked as shop") {

@@ -312,6 +312,19 @@ func ParseMember(spec string) (Member, string, error) {
 			return m, "", err
 		}
 		m.Port = p
+	case "static":
+		// Files: a folder under the edge stack's www/, or an absolute
+		// directory on a host instance (EDGE-04). The CLI checks which.
+		m.Kind = KindStatic
+		dir := strings.TrimRight(strings.TrimPrefix(rest, "www/"), "/")
+		if strings.HasPrefix(rest, "/") {
+			dir = strings.TrimRight(rest, "/")
+		}
+		if dir == "" || strings.Contains("/"+dir+"/", "/../") {
+			return m, "", fmt.Errorf("invalid static dir: %s", rest)
+		}
+		m.Ref = dir
+		return m, "", nil
 	case "unix":
 		m.Kind = KindUnix
 		if !strings.HasPrefix(rest, "/") {

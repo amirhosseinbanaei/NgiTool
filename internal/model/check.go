@@ -132,7 +132,11 @@ func CheckPool(st *State, rep *discover.Report, p *Pool) Problems {
 			add("LB-01", "", m.Label()+" is in pool "+p.Name+" twice", "remove one: ngitool pool member rm "+p.Name+" "+m.Label())
 		}
 		seen[m.Label()] = true
-		if m.Kind != KindUnix && m.Port == 0 {
+		if m.Kind == KindStatic && len(p.Members) > 1 {
+			add("EDGE-04", "", "a static route serves one folder: "+m.Label()+" cannot share pool "+p.Name+" with other members",
+				"give the folder its own route, or proxy to an app that serves it")
+		}
+		if m.Kind != KindUnix && m.Kind != KindStatic && m.Port == 0 {
 			add("RP-05", "", m.Label()+" has no port", "give it one, e.g. "+m.Label()+":3000")
 		}
 	}
@@ -254,12 +258,44 @@ func checkMember(rep *discover.Report, in *discover.Instance, m Member) Problems
 		} else {
 			ps = append(ps, Problem{Code: "RP-16", Level: LevelWarn, Msg: m.Ref + " must be inside a volume mounted into " + in.Name + ", at the same path"})
 		}
+	case KindStatic:
+		ps = append(ps, checkStatic(in, m)...)
 	case KindAddress:
 		if c := rep.Container(m.Ref); c != nil {
 			ps = append(ps, Problem{Code: "RP-05", Level: LevelWarn, Msg: m.Ref + " is a container name", Fix: "add it as container:" + m.Ref + ":" + strconv.Itoa(m.Port) + " so NgiTool checks its network"})
 		}
 	}
 	return ps
+}
+
+// checkStatic: files are served from the edge stack's www/ (a folder name)
+// or, on host nginx, from an absolute directory the user picked (EDGE-04).
+func checkStatic(in *discover.Instance, m Member) Problems {
+	var dir string
+	switch {
+	case in.Kind == discover.KindEdge && !strings.HasPrefix(m.Ref, "/"):
+		for _, mt := range in.Mounts {
+			if mt.Dest == "/var/www" {
+				dir = mt.Source + "/" + m.Ref
+			}
+		}
+	case in.Kind == discover.KindHost && strings.HasPrefix(m.Ref, "/"):
+		dir = m.Ref
+	case in.Kind == discover.KindEdge:
+		return Problems{{Code: "EDGE-04", Msg: "on the edge stack a static route is a folder under www/, not " + m.Ref, Fix: "use static:NAME (www/NAME)"}}
+	case in.Kind == discover.KindHost:
+		return Problems{{Code: "EDGE-04", Msg: "on host nginx a static route needs an absolute directory, not " + m.Ref, Fix: "use static:/srv/site"}}
+	default:
+		return Problems{{Code: "EDGE-04", Msg: "static routes are served by the edge stack and by host nginx only, not by " + in.Name,
+			Fix: "serve the files from a container (an nginx or app image) and route to it"}}
+	}
+	if dir == "" {
+		return nil
+	}
+	if st, err := os.Stat(dir); err != nil || !st.IsDir() {
+		return Problems{{Code: "EDGE-04", Level: LevelWarn, Msg: dir + " does not exist yet — nginx answers 404 until it does"}}
+	}
+	return nil
 }
 
 // listenCheck ports cli/src/flows.mjs portSource: something must listen on
@@ -511,7 +547,7 @@ func existingServers(rep *discover.Report, in *discover.Instance, r *Route) Prob
 			}
 			who := "a hand-written server"
 			if managed[srv.Pos.File] == "edge" {
-				who = "a server the edge CLI manages"
+				who = "a server the legacy edge CLI wrote (import it: ngitool migrate edge)"
 			}
 			ps = append(ps, Problem{Code: "RP-03", Msg: r.Host + " is already served on " + in.Name + " by " + who + " (" + srv.Pos.String() + ")",
 				Fix: "nginx would keep the first and ignore the other; edit or remove that server first"})
