@@ -6,7 +6,7 @@ import "github.com/amirhosseinbanaei/NgiTool/internal/paths"
 // number whenever a document's shape changes (edge case SYS-07).
 const (
 	ConfigSchema = 1
-	StateSchema  = 1
+	StateSchema  = 2
 )
 
 // Config is /etc/ngitool/config.json.
@@ -17,6 +17,7 @@ type Config struct {
 	ScanRoots   []string `json:"scanRoots"`           // where compose projects are looked for (globs allowed)
 	FrontDoor   string   `json:"frontDoor,omitempty"` // default instance that owns :80/:443
 	Pinned      string   `json:"pinned,omitempty"`    // set by `update --version`, cleared by a plain update
+	Snapshots   int      `json:"snapshots,omitempty"` // snapshots kept per instance (default 20)
 }
 
 // DefaultConfig is what a missing config.json means.
@@ -29,8 +30,9 @@ func DefaultConfig() Config {
 	}
 }
 
-// State is /var/lib/ngitool/state.json: what NgiTool manages. Later prompts
-// add instances, routes and pools here.
+// State is the schema stamp of /var/lib/ngitool/state.json. The document
+// itself (adopted instances, routes, pools) is model.State; state cannot
+// import model, which builds on discover.
 type State struct {
 	Schema int `json:"schema"`
 }
@@ -38,7 +40,18 @@ type State struct {
 // Schema 0 is a file written before "schema" existed; it only needs the stamp.
 var (
 	ConfigMigrations = map[int]Migration{0: func(map[string]any) error { return nil }}
-	StateMigrations  = map[int]Migration{0: func(map[string]any) error { return nil }}
+	StateMigrations  = map[int]Migration{
+		0: func(map[string]any) error { return nil },
+		// 1 → 2 (prompt 3): instances, pools and routes appear, empty.
+		1: func(doc map[string]any) error {
+			for _, k := range []string{"instances", "pools", "routes"} {
+				if _, ok := doc[k]; !ok {
+					doc[k] = []any{}
+				}
+			}
+			return nil
+		},
+	}
 )
 
 func ConfigStore(p paths.Paths) Store {
