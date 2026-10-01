@@ -1,0 +1,15 @@
+# configuration file /etc/nginx/nginx.conf:
+events {}
+http {
+    include /data/nginx/proxy_host/*.conf;
+}
+
+# configuration file /data/nginx/proxy_host/1.conf:
+server {
+    listen 80;
+    server_name shop.example.com;
+    location / {
+        proxy_pass http://192.0.2.99:8080;
+    }
+}
+

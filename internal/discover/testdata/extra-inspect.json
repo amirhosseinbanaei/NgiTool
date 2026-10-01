@@ -1,0 +1,279 @@
+[
+ {
+  "Id": "00000000000000000000000000000000000000000000000000000000beef0001",
+  "Name": "/static-site",
+  "State": {
+   "Status": "exited",
+   "Running": false,
+   "Pid": 0
+  },
+  "Config": {
+   "Image": "nginx:1.27-alpine",
+   "Entrypoint": [
+    "/docker-entrypoint.sh"
+   ],
+   "Cmd": [
+    "nginx",
+    "-g",
+    "daemon off;"
+   ],
+   "Labels": {}
+  },
+  "HostConfig": {
+   "NetworkMode": "bridge"
+  },
+  "Mounts": [
+   {
+    "Type": "bind",
+    "Name": "",
+    "Source": "@TMP@/static/conf.d",
+    "Destination": "/etc/nginx/conf.d",
+    "RW": false
+   }
+  ],
+  "NetworkSettings": {
+   "Networks": {
+    "bridge": {
+     "Aliases": null,
+     "DNSNames": [
+      "static-site"
+     ],
+     "IPAddress": "",
+     "Gateway": "192.0.2.1"
+    }
+   },
+   "Ports": {}
+  }
+ },
+ {
+  "Id": "00000000000000000000000000000000000000000000000000000000beef0002",
+  "Name": "/proxy-manager",
+  "State": {
+   "Status": "running",
+   "Running": true,
+   "Pid": 2200
+  },
+  "Config": {
+   "Image": "jc21/nginx-proxy-manager:latest",
+   "Entrypoint": [
+    "/init"
+   ],
+   "Cmd": null,
+   "Labels": {
+    "com.docker.compose.project": "npm",
+    "com.docker.compose.service": "app",
+    "com.docker.compose.project.working_dir": "/srv/npm",
+    "com.docker.compose.project.config_files": "/srv/npm/compose.yaml"
+   }
+  },
+  "HostConfig": {
+   "NetworkMode": "npm_default"
+  },
+  "Mounts": [
+   {
+    "Type": "bind",
+    "Name": "",
+    "Source": "/srv/npm/data",
+    "Destination": "/data",
+    "RW": true
+   }
+  ],
+  "NetworkSettings": {
+   "Networks": {
+    "npm_default": {
+     "Aliases": null,
+     "DNSNames": [
+      "proxy-manager"
+     ],
+     "IPAddress": "192.0.2.52",
+     "Gateway": "192.0.2.1"
+    }
+   },
+   "Ports": {}
+  }
+ },
+ {
+  "Id": "00000000000000000000000000000000000000000000000000000000beef0003",
+  "Name": "/hostnet",
+  "State": {
+   "Status": "running",
+   "Running": true,
+   "Pid": 2300
+  },
+  "Config": {
+   "Image": "nginx:alpine",
+   "Entrypoint": [
+    "/docker-entrypoint.sh"
+   ],
+   "Cmd": [
+    "nginx",
+    "-g",
+    "daemon off;"
+   ],
+   "Labels": {}
+  },
+  "HostConfig": {
+   "NetworkMode": "host"
+  },
+  "Mounts": [
+   {
+    "Type": "bind",
+    "Name": "",
+    "Source": "@TMP@/hostnet",
+    "Destination": "/etc/nginx/conf.d",
+    "RW": true
+   }
+  ],
+  "NetworkSettings": {
+   "Networks": {
+    "host": {
+     "Aliases": null,
+     "DNSNames": null,
+     "IPAddress": "",
+     "Gateway": ""
+    }
+   },
+   "Ports": {}
+  }
+ },
+ {
+  "Id": "00000000000000000000000000000000000000000000000000000000beef0004",
+  "Name": "/single-file",
+  "State": {
+   "Status": "exited",
+   "Running": false,
+   "Pid": 0
+  },
+  "Config": {
+   "Image": "nginx:1.27",
+   "Entrypoint": [
+    "/docker-entrypoint.sh"
+   ],
+   "Cmd": [
+    "nginx",
+    "-g",
+    "daemon off;"
+   ],
+   "Labels": {}
+  },
+  "HostConfig": {
+   "NetworkMode": "bridge"
+  },
+  "Mounts": [
+   {
+    "Type": "bind",
+    "Name": "",
+    "Source": "@TMP@/single/nginx.conf",
+    "Destination": "/etc/nginx/nginx.conf",
+    "RW": false
+   },
+   {
+    "Type": "bind",
+    "Name": "",
+    "Source": "@TMP@/single/templates",
+    "Destination": "/etc/nginx/templates",
+    "RW": false
+   }
+  ],
+  "NetworkSettings": {
+   "Networks": {
+    "bridge": {
+     "Aliases": null,
+     "DNSNames": [
+      "single-file"
+     ],
+     "IPAddress": "",
+     "Gateway": "192.0.2.1"
+    }
+   },
+   "Ports": {}
+  }
+ },
+ {
+  "Id": "00000000000000000000000000000000000000000000000000000000beef0005",
+  "Name": "/baked",
+  "State": {
+   "Status": "exited",
+   "Running": false,
+   "Pid": 0
+  },
+  "Config": {
+   "Image": "shop/frontend:1",
+   "Entrypoint": null,
+   "Cmd": [
+    "nginx",
+    "-g",
+    "daemon off;"
+   ],
+   "Labels": {}
+  },
+  "HostConfig": {
+   "NetworkMode": "bridge"
+  },
+  "Mounts": [],
+  "NetworkSettings": {
+   "Networks": {
+    "bridge": {
+     "Aliases": null,
+     "DNSNames": [
+      "baked"
+     ],
+     "IPAddress": "",
+     "Gateway": "192.0.2.1"
+    }
+   },
+   "Ports": {}
+  }
+ },
+ {
+  "Id": "00000000000000000000000000000000000000000000000000000000beef0006",
+  "Name": "/old-web-1",
+  "State": {
+   "Status": "exited",
+   "Running": false,
+   "Pid": 0
+  },
+  "Config": {
+   "Image": "nginx:1.25",
+   "Entrypoint": [
+    "/docker-entrypoint.sh"
+   ],
+   "Cmd": [
+    "nginx",
+    "-g",
+    "daemon off;"
+   ],
+   "Labels": {
+    "com.docker.compose.project": "old",
+    "com.docker.compose.service": "web",
+    "com.docker.compose.project.working_dir": "@TMP@/old",
+    "com.docker.compose.project.config_files": "@TMP@/old/compose.yaml"
+   }
+  },
+  "HostConfig": {
+   "NetworkMode": "old_default"
+  },
+  "Mounts": [
+   {
+    "Type": "bind",
+    "Name": "",
+    "Source": "@TMP@/old/conf.d",
+    "Destination": "/etc/nginx/conf.d",
+    "RW": false
+   }
+  ],
+  "NetworkSettings": {
+   "Networks": {
+    "old_default": {
+     "Aliases": null,
+     "DNSNames": [
+      "old-web-1"
+     ],
+     "IPAddress": "",
+     "Gateway": "192.0.2.1"
+    }
+   },
+   "Ports": {}
+  }
+ }
+]

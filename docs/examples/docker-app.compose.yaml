@@ -1,0 +1,34 @@
+# How a containerised project joins NgiTool's edge stack permanently.
+# Lives in the PROJECT's own repo, not in NgiTool.
+#
+#   ngitool app link /path/to/shop
+#   ngitool route add shop.example.com --to app:shop/web:3000
+#
+# Without the `edge` network block below, `route add` offers to attach the
+# service through NgiTool's override (/var/lib/ngitool/overrides/shop.yaml)
+# instead — then always start it with `ngitool app up shop`, never a plain
+# `docker compose up` (it would drop the override: DOCK-07).
+
+services:
+  web:
+    build: .
+    restart: unless-stopped
+    # No `ports:` — nothing is published on the host. nginx reaches it over the edge network.
+    expose:
+      - "3000"
+    networks:
+      default:
+      edge:
+        # Unique name on the shared network. Service names like "web" or "api"
+        # collide between projects; NgiTool uses this alias as the upstream.
+        aliases: [shop-web]
+
+  db:
+    image: postgres:17-alpine
+    # Only on the project's private network — nginx (and other projects) can't see it.
+    networks: [default]
+
+networks:
+  edge:
+    name: edge         # EDGE_NETWORK in the edge stack's .env
+    external: true

@@ -1,0 +1,70 @@
+=== /etc/nginx/conf.d/ngitool.conf
+# Managed by NgiTool — generated from state; edit with ngitool, changes here are overwritten
+# ngitool: instance sha256:1c9dcf7ef26023b2d49e1b16df7bfd494da7f3d4bf49f5682d95c6d4f5624765
+# front: the one file its config includes; everything NgiTool serves hangs off it.
+
+# Upgrade only when the client asks for it, "" otherwise so upstream keepalive works (LB-06, RP-08).
+map $http_upgrade $connection_upgrade {
+    default upgrade;
+    ''      '';
+}
+
+include /etc/nginx/conf.d/ngitool/upstreams/*.conf;
+include /etc/nginx/conf.d/ngitool/servers/*.conf;
+
+=== /etc/nginx/conf.d/ngitool/proxy.conf
+# Managed by NgiTool — generated from state; edit with ngitool, changes here are overwritten
+# ngitool: snippet sha256:4f02f40b3125f4bef3ba89c19f1cd73ba11a79bae57bf195fb696d57dfc806cb
+# Included by every proxied location NgiTool writes.
+proxy_http_version 1.1;
+proxy_set_header X-Real-IP         $remote_addr;
+proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+proxy_set_header X-Forwarded-Proto $scheme;
+proxy_set_header X-Forwarded-Host  $host;
+# Room for large response headers. Next.js, Nuxt, SvelteKit and Remix send preload Link
+# headers, auth cookies and framework headers that overflow nginx's 4k default, which
+# fails the request with 502 "upstream sent too big header" (RP-09).
+proxy_buffer_size       16k;
+proxy_buffers           8 16k;
+proxy_busy_buffers_size 32k;
+
+=== /etc/nginx/conf.d/ngitool/servers/proxy.example.com.conf
+# Managed by NgiTool — generated from state; edit with ngitool, changes here are overwritten
+# ngitool: route:proxy.example.com sha256:cefe500026533a1cbb2c5fa228ab812359cc8761f421165431ca6f44d5199da5
+# proxy.example.com → api.upstream.example.net:443
+
+server {
+    listen 80;
+    server_name proxy.example.com;
+    absolute_redirect off;
+    include /etc/nginx/conf.d/ngitool/locations/proxy.example.com/*.conf;
+
+    location / {
+        proxy_pass https://ngt_ext;
+        include /etc/nginx/conf.d/ngitool/proxy.conf;
+        proxy_set_header Host api.upstream.example.net;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection $connection_upgrade;
+        proxy_set_header X-Env "prod one";
+        proxy_connect_timeout 5s;
+        proxy_read_timeout 120s;
+        proxy_send_timeout 120s;
+        client_max_body_size 100m;
+        proxy_ssl_server_name on;
+        proxy_ssl_name api.upstream.example.net;
+        proxy_ssl_verify on;
+        proxy_ssl_trusted_certificate /etc/ssl/certs/ca-certificates.crt;
+        proxy_ssl_verify_depth 3;
+    }
+}
+
+=== /etc/nginx/conf.d/ngitool/upstreams/ext.conf
+# Managed by NgiTool — generated from state; edit with ngitool, changes here are overwritten
+# ngitool: pool:ext sha256:436c508927dcec0287bc18bdb72ea68a5efe56d7d51c984d9614e3bda937258c
+# pool ext: api.upstream.example.net:443
+upstream ngt_ext {
+    zone ngt_ext 64k;
+    resolver 127.0.0.11 valid=10s ipv6=off;
+    server api.upstream.example.net:443 resolve;
+}
+

@@ -1,0 +1,9 @@
+{{- if .Bare -}}
+location = {{.Bare}} { return 301 {{.Bare}}/$is_args$args; }
+
+{{end -}}
+location {{.Path}} {
+{{- range .Lines}}
+    {{.}}
+{{- end}}
+}

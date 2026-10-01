@@ -1,0 +1,68 @@
+=== /etc/nginx/conf.d/ngitool.conf
+# Managed by NgiTool — generated from state; edit with ngitool, changes here are overwritten
+# ngitool: instance sha256:1c9dcf7ef26023b2d49e1b16df7bfd494da7f3d4bf49f5682d95c6d4f5624765
+# front: the one file its config includes; everything NgiTool serves hangs off it.
+
+# Upgrade only when the client asks for it, "" otherwise so upstream keepalive works (LB-06, RP-08).
+map $http_upgrade $connection_upgrade {
+    default upgrade;
+    ''      '';
+}
+
+include /etc/nginx/conf.d/ngitool/upstreams/*.conf;
+include /etc/nginx/conf.d/ngitool/servers/*.conf;
+
+=== /etc/nginx/conf.d/ngitool/proxy.conf
+# Managed by NgiTool — generated from state; edit with ngitool, changes here are overwritten
+# ngitool: snippet sha256:4f02f40b3125f4bef3ba89c19f1cd73ba11a79bae57bf195fb696d57dfc806cb
+# Included by every proxied location NgiTool writes.
+proxy_http_version 1.1;
+proxy_set_header X-Real-IP         $remote_addr;
+proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+proxy_set_header X-Forwarded-Proto $scheme;
+proxy_set_header X-Forwarded-Host  $host;
+# Room for large response headers. Next.js, Nuxt, SvelteKit and Remix send preload Link
+# headers, auth cookies and framework headers that overflow nginx's 4k default, which
+# fails the request with 502 "upstream sent too big header" (RP-09).
+proxy_buffer_size       16k;
+proxy_buffers           8 16k;
+proxy_busy_buffers_size 32k;
+
+=== /etc/nginx/conf.d/ngitool/servers/lb.example.com.conf
+# Managed by NgiTool — generated from state; edit with ngitool, changes here are overwritten
+# ngitool: route:lb.example.com sha256:893551ef03f56979beddf280779ef55ac7808f88fe193c78cd95548fa933f0fb
+# lb.example.com → web-1:3000, web-2:3000 · least connections
+
+server {
+    listen 80;
+    server_name lb.example.com;
+    absolute_redirect off;
+    include /etc/nginx/conf.d/ngitool/locations/lb.example.com/*.conf;
+
+    location / {
+        proxy_pass http://ngt_p;
+        include /etc/nginx/conf.d/ngitool/proxy.conf;
+        proxy_set_header Host $host;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection $connection_upgrade;
+        proxy_connect_timeout 5s;
+        proxy_read_timeout 120s;
+        proxy_send_timeout 120s;
+        proxy_next_upstream error timeout;
+        proxy_next_upstream_tries 2;
+        proxy_next_upstream_timeout 15s;
+    }
+}
+
+=== /etc/nginx/conf.d/ngitool/upstreams/p.conf
+# Managed by NgiTool — generated from state; edit with ngitool, changes here are overwritten
+# ngitool: pool:p sha256:2320c045acb43689ae698a99a8a9d0b1b71e95821dc7ab068180945b2618d212
+# pool p: web-1:3000, web-2:3000 · least connections
+upstream ngt_p {
+    zone ngt_p 64k;
+    least_conn;
+    server web-1:3000;
+    server web-2:3000 max_conns=10;
+}
+
+--- LB-03 warn: nginx will refuse to start if a name does not resolve. pool p lists names as static server lines: nginx/1.25.3 has no upstream resolve (1.27.3+)

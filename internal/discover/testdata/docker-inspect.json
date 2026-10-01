@@ -1,0 +1,670 @@
+[
+ {
+  "Id": "000000000000000000000000000000000000000000000000000000c0ffee0000",
+  "Name": "/App4-Site",
+  "State": {
+   "Status": "running",
+   "Running": true,
+   "Pid": 3000
+  },
+  "Config": {
+   "Image": "app4:latest",
+   "Entrypoint": null,
+   "Cmd": [
+    "node",
+    "server.js"
+   ],
+   "Labels": {
+    "com.docker.compose.project": "app4",
+    "com.docker.compose.project.config_files": "/home/alice/Acme/App4-Site/compose.yaml,@EDGE@/apps/app4/edge.override.yaml",
+    "com.docker.compose.project.working_dir": "/home/alice/Acme/App4-Site",
+    "com.docker.compose.service": "web"
+   }
+  },
+  "HostConfig": {
+   "NetworkMode": "app4_default"
+  },
+  "Mounts": [
+   {
+    "Type": "volume",
+    "Name": "app4_next-cache",
+    "Source": "/var/lib/docker/volumes/app4_next-cache/_data",
+    "Destination": "/app/.next/cache",
+    "RW": true
+   }
+  ],
+  "NetworkSettings": {
+   "Networks": {
+    "edge": {
+     "Aliases": [
+      "App4-Site",
+      "web",
+      "app4-web"
+     ],
+     "DNSNames": [
+      "App4-Site",
+      "web",
+      "app4-web"
+     ],
+     "IPAddress": "198.51.100.4",
+     "Gateway": "198.51.100.2"
+    },
+    "app4_default": {
+     "Aliases": [
+      "App4-Site",
+      "web"
+     ],
+     "DNSNames": [
+      "App4-Site",
+      "web"
+     ],
+     "IPAddress": "198.51.100.3",
+     "Gateway": "198.51.100.2"
+    }
+   },
+   "Ports": {
+    "3002/tcp": null
+   }
+  }
+ },
+ {
+  "Id": "000000000000000000000000000000000000000000000000000000c0ffee0001",
+  "Name": "/app3_web",
+  "State": {
+   "Status": "running",
+   "Running": true,
+   "Pid": 3001
+  },
+  "Config": {
+   "Image": "app3:latest",
+   "Entrypoint": null,
+   "Cmd": [
+    "node",
+    "server.js"
+   ],
+   "Labels": {
+    "com.docker.compose.project": "app3",
+    "com.docker.compose.project.config_files": "/home/alice/Acme/Projects/app3/compose.yaml,@EDGE@/apps/app3/edge.override.yaml",
+    "com.docker.compose.project.working_dir": "/home/alice/Acme/Projects/app3",
+    "com.docker.compose.service": "web"
+   }
+  },
+  "HostConfig": {
+   "NetworkMode": "app3_default"
+  },
+  "Mounts": [
+   {
+    "Type": "bind",
+    "Name": null,
+    "Source": "/home/alice/Acme/Projects/app3/data",
+    "Destination": "/data/db",
+    "RW": true
+   },
+   {
+    "Type": "volume",
+    "Name": "app3_uploads",
+    "Source": "/var/lib/docker/volumes/app3_uploads/_data",
+    "Destination": "/data/uploads",
+    "RW": true
+   }
+  ],
+  "NetworkSettings": {
+   "Networks": {
+    "app3_default": {
+     "Aliases": [
+      "app3_web",
+      "web"
+     ],
+     "DNSNames": [
+      "app3_web",
+      "web"
+     ],
+     "IPAddress": "198.51.100.3",
+     "Gateway": "198.51.100.2"
+    },
+    "edge": {
+     "Aliases": [
+      "app3_web",
+      "web",
+      "app3-web"
+     ],
+     "DNSNames": [
+      "app3_web",
+      "web",
+      "app3-web"
+     ],
+     "IPAddress": "198.51.100.7",
+     "Gateway": "198.51.100.2"
+    }
+   },
+   "Ports": {
+    "3000/tcp": null
+   }
+  }
+ },
+ {
+  "Id": "000000000000000000000000000000000000000000000000000000c0ffee0002",
+  "Name": "/app5_agent",
+  "State": {
+   "Status": "running",
+   "Running": true,
+   "Pid": 3002
+  },
+  "Config": {
+   "Image": "app5:local",
+   "Entrypoint": null,
+   "Cmd": [
+    "node",
+    "server.js"
+   ],
+   "Labels": {
+    "com.docker.compose.project": "app5",
+    "com.docker.compose.project.config_files": "/home/alice/Acme/Acme-Voice-Agent/compose.yaml",
+    "com.docker.compose.project.working_dir": "/home/alice/Acme/Acme-Voice-Agent",
+    "com.docker.compose.service": "web"
+   }
+  },
+  "HostConfig": {
+   "NetworkMode": "app5_default"
+  },
+  "Mounts": [
+   {
+    "Type": "volume",
+    "Name": "app5_next-cache",
+    "Source": "/var/lib/docker/volumes/app5_next-cache/_data",
+    "Destination": "/app/.next/cache",
+    "RW": true
+   }
+  ],
+  "NetworkSettings": {
+   "Networks": {
+    "edge": {
+     "Aliases": [
+      "app5_agent",
+      "web"
+     ],
+     "DNSNames": [
+      "app5_agent",
+      "web"
+     ],
+     "IPAddress": "198.51.100.8",
+     "Gateway": "198.51.100.2"
+    },
+    "app5_default": {
+     "Aliases": [
+      "app5_agent",
+      "web"
+     ],
+     "DNSNames": [
+      "app5_agent",
+      "web"
+     ],
+     "IPAddress": "198.51.100.3",
+     "Gateway": "198.51.100.2"
+    }
+   },
+   "Ports": {
+    "3000/tcp": null
+   }
+  }
+ },
+ {
+  "Id": "000000000000000000000000000000000000000000000000000000c0ffee0003",
+  "Name": "/App2",
+  "State": {
+   "Status": "running",
+   "Running": true,
+   "Pid": 3003
+  },
+  "Config": {
+   "Image": "app2:prod",
+   "Entrypoint": null,
+   "Cmd": [
+    "node",
+    "server.js"
+   ],
+   "Labels": {
+    "com.docker.compose.project": "app2",
+    "com.docker.compose.project.config_files": "/home/alice/work/App2/compose.yaml",
+    "com.docker.compose.project.working_dir": "/home/alice/work/App2",
+    "com.docker.compose.service": "web"
+   }
+  },
+  "HostConfig": {
+   "NetworkMode": "app2_default"
+  },
+  "Mounts": [
+   {
+    "Type": "volume",
+    "Name": "app2_next-cache",
+    "Source": "/var/lib/docker/volumes/app2_next-cache/_data",
+    "Destination": "/app/.next/cache",
+    "RW": true
+   }
+  ],
+  "NetworkSettings": {
+   "Networks": {
+    "app2_default": {
+     "Aliases": [
+      "App2",
+      "web"
+     ],
+     "DNSNames": [
+      "App2",
+      "web"
+     ],
+     "IPAddress": "198.51.100.3",
+     "Gateway": "198.51.100.2"
+    },
+    "edge": {
+     "Aliases": [
+      "App2",
+      "web",
+      "app2-web"
+     ],
+     "DNSNames": [
+      "App2",
+      "web",
+      "app2-web"
+     ],
+     "IPAddress": "198.51.100.6",
+     "Gateway": "198.51.100.2"
+    }
+   },
+   "Ports": {
+    "3005/tcp": [
+     {
+      "HostIp": "127.0.0.1",
+      "HostPort": "3005"
+     }
+    ]
+   }
+  }
+ },
+ {
+  "Id": "000000000000000000000000000000000000000000000000000000c0ffee0004",
+  "Name": "/App1",
+  "State": {
+   "Status": "running",
+   "Running": true,
+   "Pid": 2100
+  },
+  "Config": {
+   "Image": "app1:latest",
+   "Entrypoint": [
+    "/docker-entrypoint.sh"
+   ],
+   "Cmd": [
+    "nginx",
+    "-g",
+    "daemon off;"
+   ],
+   "Labels": {
+    "com.docker.compose.project": "app1",
+    "com.docker.compose.project.config_files": "/home/alice/work/App1/compose.yaml,@EDGE@/apps/app1/edge.override.yaml",
+    "com.docker.compose.project.working_dir": "/home/alice/work/App1",
+    "com.docker.compose.service": "panel"
+   }
+  },
+  "HostConfig": {
+   "NetworkMode": "edge"
+  },
+  "Mounts": [],
+  "NetworkSettings": {
+   "Networks": {
+    "edge": {
+     "Aliases": [
+      "App1",
+      "panel",
+      "app1-panel"
+     ],
+     "DNSNames": [
+      "App1",
+      "panel",
+      "app1-panel"
+     ],
+     "IPAddress": "198.51.100.5",
+     "Gateway": "198.51.100.2"
+    },
+    "proxy": {
+     "Aliases": [
+      "App1",
+      "panel"
+     ],
+     "DNSNames": [
+      "App1",
+      "panel"
+     ],
+     "IPAddress": "198.51.100.3",
+     "Gateway": "198.51.100.2"
+    }
+   },
+   "Ports": {
+    "8080/tcp": [
+     {
+      "HostIp": "0.0.0.0",
+      "HostPort": "8080"
+     },
+     {
+      "HostIp": "::",
+      "HostPort": "8080"
+     }
+    ]
+   }
+  }
+ },
+ {
+  "Id": "000000000000000000000000000000000000000000000000000000c0ffee0005",
+  "Name": "/edge-nginx-1",
+  "State": {
+   "Status": "running",
+   "Running": true,
+   "Pid": 2000
+  },
+  "Config": {
+   "Image": "nginx:stable-alpine",
+   "Entrypoint": [
+    "/docker-entrypoint.sh"
+   ],
+   "Cmd": [
+    "/bin/sh",
+    "/etc/nginx/edge/start.sh"
+   ],
+   "Labels": {
+    "com.docker.compose.project": "edge",
+    "com.docker.compose.project.config_files": "@EDGE@/compose.yaml",
+    "com.docker.compose.project.working_dir": "@EDGE@",
+    "com.docker.compose.service": "nginx"
+   }
+  },
+  "HostConfig": {
+   "NetworkMode": "edge"
+  },
+  "Mounts": [
+   {
+    "Type": "bind",
+    "Name": null,
+    "Source": "@EDGE@/data/certs",
+    "Destination": "/etc/edge-certs",
+    "RW": false
+   },
+   {
+    "Type": "bind",
+    "Name": null,
+    "Source": "@EDGE@/data/letsencrypt",
+    "Destination": "/etc/letsencrypt",
+    "RW": false
+   },
+   {
+    "Type": "bind",
+    "Name": null,
+    "Source": "@EDGE@/data/acme",
+    "Destination": "/var/acme",
+    "RW": false
+   },
+   {
+    "Type": "bind",
+    "Name": null,
+    "Source": "@EDGE@/www",
+    "Destination": "/var/www",
+    "RW": false
+   },
+   {
+    "Type": "bind",
+    "Name": null,
+    "Source": "@EDGE@/conf",
+    "Destination": "/etc/nginx/edge",
+    "RW": false
+   }
+  ],
+  "NetworkSettings": {
+   "Networks": {
+    "edge": {
+     "Aliases": [
+      "edge-nginx-1",
+      "nginx"
+     ],
+     "DNSNames": [
+      "edge-nginx-1",
+      "nginx"
+     ],
+     "IPAddress": "198.51.100.3",
+     "Gateway": "198.51.100.2"
+    }
+   },
+   "Ports": {
+    "443/tcp": [
+     {
+      "HostIp": "0.0.0.0",
+      "HostPort": "443"
+     },
+     {
+      "HostIp": "::",
+      "HostPort": "443"
+     }
+    ],
+    "80/tcp": [
+     {
+      "HostIp": "0.0.0.0",
+      "HostPort": "80"
+     },
+     {
+      "HostIp": "::",
+      "HostPort": "80"
+     }
+    ]
+   }
+  }
+ },
+ {
+  "Id": "000000000000000000000000000000000000000000000000000000c0ffee0006",
+  "Name": "/edge-certbot-1",
+  "State": {
+   "Status": "running",
+   "Running": true,
+   "Pid": 3006
+  },
+  "Config": {
+   "Image": "certbot/dns-cloudflare:latest",
+   "Entrypoint": [
+    "/bin/sh",
+    "-c",
+    "trap exit TERM; while :; do certbot renew --quiet; sleep 12h & wait ${!}; done"
+   ],
+   "Cmd": null,
+   "Labels": {
+    "com.docker.compose.project": "edge",
+    "com.docker.compose.project.config_files": "@EDGE@/compose.yaml",
+    "com.docker.compose.project.working_dir": "@EDGE@",
+    "com.docker.compose.service": "certbot"
+   }
+  },
+  "HostConfig": {
+   "NetworkMode": "edge_default"
+  },
+  "Mounts": [
+   {
+    "Type": "bind",
+    "Name": null,
+    "Source": "@EDGE@/data/letsencrypt",
+    "Destination": "/etc/letsencrypt",
+    "RW": true
+   },
+   {
+    "Type": "bind",
+    "Name": null,
+    "Source": "@EDGE@/secrets/cloudflare.ini",
+    "Destination": "/secrets/cloudflare.ini",
+    "RW": false
+   },
+   {
+    "Type": "bind",
+    "Name": null,
+    "Source": "@EDGE@/data/acme",
+    "Destination": "/var/acme",
+    "RW": true
+   },
+   {
+    "Type": "volume",
+    "Name": "9b79ac1df4bad5970d34a5805f16e11d082257a24b5dae61bfdccbc2965f96f5",
+    "Source": "/var/lib/docker/volumes/9b79ac1df4bad5970d34a5805f16e11d082257a24b5dae61bfdccbc2965f96f5/_data",
+    "Destination": "/var/lib/letsencrypt",
+    "RW": true
+   }
+  ],
+  "NetworkSettings": {
+   "Networks": {
+    "edge_default": {
+     "Aliases": [
+      "edge-certbot-1",
+      "certbot"
+     ],
+     "DNSNames": [
+      "edge-certbot-1",
+      "certbot"
+     ],
+     "IPAddress": "198.51.100.3",
+     "Gateway": "198.51.100.2"
+    }
+   },
+   "Ports": {
+    "443/tcp": null,
+    "80/tcp": null
+   }
+  }
+ },
+ {
+  "Id": "000000000000000000000000000000000000000000000000000000c0ffee0007",
+  "Name": "/proj6-postgres-1",
+  "State": {
+   "Status": "running",
+   "Running": true,
+   "Pid": 3007
+  },
+  "Config": {
+   "Image": "postgres:17",
+   "Entrypoint": [
+    "docker-entrypoint.sh"
+   ],
+   "Cmd": [
+    "postgres"
+   ],
+   "Labels": {
+    "com.docker.compose.project": "proj6",
+    "com.docker.compose.project.config_files": "/home/bob/Library/backend/docker/compose.dev.yml",
+    "com.docker.compose.project.working_dir": "/home/bob/Library/backend/docker",
+    "com.docker.compose.service": "postgres"
+   }
+  },
+  "HostConfig": {
+   "NetworkMode": "proj6_default"
+  },
+  "Mounts": [
+   {
+    "Type": "volume",
+    "Name": "proj6_postgres-data",
+    "Source": "/var/lib/docker/volumes/proj6_postgres-data/_data",
+    "Destination": "/var/lib/postgresql/data",
+    "RW": true
+   }
+  ],
+  "NetworkSettings": {
+   "Networks": {
+    "proj6_default": {
+     "Aliases": [
+      "proj6-postgres-1",
+      "postgres"
+     ],
+     "DNSNames": [
+      "proj6-postgres-1",
+      "postgres"
+     ],
+     "IPAddress": "198.51.100.4",
+     "Gateway": "198.51.100.2"
+    }
+   },
+   "Ports": {
+    "5432/tcp": [
+     {
+      "HostIp": "0.0.0.0",
+      "HostPort": "5433"
+     },
+     {
+      "HostIp": "::",
+      "HostPort": "5433"
+     }
+    ]
+   }
+  }
+ },
+ {
+  "Id": "000000000000000000000000000000000000000000000000000000c0ffee0008",
+  "Name": "/adminui",
+  "State": {
+   "Status": "running",
+   "Running": true,
+   "Pid": 3008
+  },
+  "Config": {
+   "Image": "adminui/adminui-ce:lts",
+   "Entrypoint": [
+    "/adminui"
+   ],
+   "Cmd": null,
+   "Labels": {
+    "com.docker.compose.project": "adminui",
+    "com.docker.compose.project.config_files": "/root/srv/adminui/docker-compose.yaml",
+    "com.docker.compose.project.working_dir": "/root/srv/adminui",
+    "com.docker.compose.service": "adminui"
+   }
+  },
+  "HostConfig": {
+   "NetworkMode": "adminui_network"
+  },
+  "Mounts": [
+   {
+    "Type": "volume",
+    "Name": "adminui_data",
+    "Source": "/var/lib/docker/volumes/adminui_data/_data",
+    "Destination": "/data",
+    "RW": true
+   },
+   {
+    "Type": "bind",
+    "Name": null,
+    "Source": "/var/run/docker.sock",
+    "Destination": "/var/run/docker.sock",
+    "RW": true
+   }
+  ],
+  "NetworkSettings": {
+   "Networks": {
+    "adminui_network": {
+     "Aliases": [
+      "adminui",
+      "adminui"
+     ],
+     "DNSNames": [
+      "adminui"
+     ],
+     "IPAddress": "198.51.100.3",
+     "Gateway": "198.51.100.2"
+    }
+   },
+   "Ports": {
+    "8000/tcp": null,
+    "9000/tcp": null,
+    "9443/tcp": [
+     {
+      "HostIp": "0.0.0.0",
+      "HostPort": "9443"
+     },
+     {
+      "HostIp": "::",
+      "HostPort": "9443"
+     }
+    ]
+   }
+  }
+ }
+]

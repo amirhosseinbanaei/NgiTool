@@ -1,0 +1,22 @@
+# configuration file /etc/nginx/nginx.conf:
+events {}
+http {
+    include /etc/nginx/conf.d/*.conf;
+}
+
+# configuration file /etc/nginx/conf.d/api.conf:
+upstream api {
+    server api-backend:9000;
+    server 127.0.0.1:3005 backup;
+}
+server {
+    listen 8081;
+    server_name api.example.com;
+    location / {
+        proxy_pass http://api;
+    }
+    location /local {
+        proxy_pass http://127.0.0.1:3999;
+    }
+}
+

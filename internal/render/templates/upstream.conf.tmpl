@@ -1,0 +1,21 @@
+# pool {{.Pool}}: {{.Desc}}
+upstream {{.Name}} {
+{{- if .Zone}}
+    zone {{.Name}} {{.Zone}};
+{{- end}}
+{{- if .Method}}
+    {{.Method}};
+{{- end}}
+{{- if .Resolver}}
+    resolver {{.Resolver}} valid=10s ipv6=off;
+{{- end}}
+{{- range .Servers}}
+    server {{.}};
+{{- end}}
+{{- if .Keepalive}}
+    keepalive {{.Keepalive}};
+{{- end}}
+{{- range .Extra}}
+    {{.}}
+{{- end}}
+}

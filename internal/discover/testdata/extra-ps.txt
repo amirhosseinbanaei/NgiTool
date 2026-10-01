@@ -1,0 +1,6 @@
+00000000000000000000000000000000000000000000000000000000beef0001	static-site	nginx:1.27-alpine	exited	Exited (0) 2 days ago	bridge					
+00000000000000000000000000000000000000000000000000000000beef0002	proxy-manager	jc21/nginx-proxy-manager:latest	running	Up 1 hour	npm_default	81/tcp	npm	app	/srv/npm	/srv/npm/compose.yaml
+00000000000000000000000000000000000000000000000000000000beef0003	hostnet	nginx:alpine	running	Up 1 hour	host					
+00000000000000000000000000000000000000000000000000000000beef0004	single-file	nginx:1.27	exited	Exited (0) 2 days ago	bridge					
+00000000000000000000000000000000000000000000000000000000beef0005	baked	shop/frontend:1	exited	Exited (0) 2 days ago	bridge					
+00000000000000000000000000000000000000000000000000000000beef0006	old-web-1	nginx:1.25	exited	Exited (0) 2 days ago	old_default		old	web	@TMP@/old	@TMP@/old/compose.yaml
