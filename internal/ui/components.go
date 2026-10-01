@@ -3,7 +3,9 @@ package ui
 import (
 	"fmt"
 	"io"
+	"math"
 	"strings"
+	"time"
 )
 
 func writeln(w io.Writer, s string) { _, _ = fmt.Fprintln(w, s) }
@@ -257,4 +259,29 @@ func CheckLine(s Status, label, detail, fix string) []string {
 		out = append(out, "    "+Muted(SymArrow+" "+fix))
 	}
 	return out
+}
+
+// DaysLeft is a certificate's expiry as the legacy CLI showed it
+// (cli/src/ui.mjs daysLeft): "83 days left", "3 years left", "expired 2d
+// ago", in Err under 14 days, Warn under 30, OK otherwise; "unknown" muted
+// for a zero time.
+func DaysLeft(notAfter, now time.Time) string {
+	if notAfter.IsZero() {
+		return Muted("unknown")
+	}
+	days := int(math.Floor(notAfter.Sub(now).Hours() / 24))
+	if days < 0 {
+		return Err(fmt.Sprintf("expired %dd ago", -days))
+	}
+	text := fmt.Sprintf("%d days left", days)
+	if days > 730 {
+		text = fmt.Sprintf("%d years left", int(math.Round(float64(days)/365)))
+	}
+	switch {
+	case days < 14:
+		return Err(text)
+	case days < 30:
+		return Warn(text)
+	}
+	return OK(text)
 }
