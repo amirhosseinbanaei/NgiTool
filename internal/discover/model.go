@@ -212,6 +212,39 @@ type Report struct {
 	ComposeFiles int          `json:"composeFiles"`
 	ReadFailures []string     `json:"readFailures,omitempty"` // DISC-14
 	Steps        []Step       `json:"steps"`
+	// Containers and Listeners are every container and listening socket,
+	// not only nginx ones: route targets are picked from them (prompt 3).
+	Containers []Container `json:"containers,omitempty"`
+	Listeners  []PortOwner `json:"listeners,omitempty"`
+	Resolvers  []string    `json:"resolvers,omitempty"` // the host's nameservers (/etc/resolv.conf)
+}
+
+// Container is any container on this machine, as a route target sees it.
+// Container IPs are never kept (DOCK-16): nginx reaches containers by name.
+type Container struct {
+	Name        string              `json:"name"`
+	Image       string              `json:"image"`
+	State       string              `json:"state"`
+	Running     bool                `json:"running"`
+	Project     string              `json:"project,omitempty"`
+	Service     string              `json:"service,omitempty"`
+	NetworkMode string              `json:"networkMode,omitempty"`
+	Networks    []string            `json:"networks,omitempty"`
+	DNS         map[string][]string `json:"dns,omitempty"`      // network → names that resolve to it
+	Gateways    map[string]string   `json:"gateways,omitempty"` // network → bridge gateway (the host, RP-06)
+	Exposed     []int               `json:"exposed,omitempty"`  // container ports: EXPOSE and publishes
+	Ports       []Published         `json:"ports,omitempty"`
+	Instance    string              `json:"instance,omitempty"` // set when it is an nginx instance
+}
+
+// Container returns the container named name, or nil.
+func (r *Report) Container(name string) *Container {
+	for i := range r.Containers {
+		if r.Containers[i].Name == name {
+			return &r.Containers[i]
+		}
+	}
+	return nil
 }
 
 // Find returns the instance with id, or nil.

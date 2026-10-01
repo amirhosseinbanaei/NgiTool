@@ -53,6 +53,7 @@ type ctr struct {
 	Gateways    map[string]string   // network → gateway
 	Ports       []Published
 	Master      string // the nginx master's title, from docker top
+	Exposed     []int  // container ports from EXPOSE and publishes
 	instance    string // id when it is an nginx instance
 }
 
@@ -70,6 +71,7 @@ type inspectJSON struct {
 		Entrypoint []string          `json:"Entrypoint"`
 		Cmd        []string          `json:"Cmd"`
 		Labels     map[string]string `json:"Labels"`
+		Exposed    map[string]any    `json:"ExposedPorts"`
 	} `json:"Config"`
 	HostConfig struct {
 		NetworkMode string `json:"NetworkMode"`
@@ -222,14 +224,30 @@ func applyInspect(c *ctr, d inspectJSON) {
 		sort.Strings(nets)
 		c.Networks = nets
 	}
+	exposed := map[int]bool{}
+	for key := range d.Config.Exposed {
+		if port, proto, _ := strings.Cut(key, "/"); proto == "tcp" {
+			if n, err := strconv.Atoi(port); err == nil {
+				exposed[n] = true
+			}
+		}
+	}
 	for key, binds := range d.NetworkSettings.Ports {
 		port, proto, _ := strings.Cut(key, "/")
 		cp, _ := strconv.Atoi(port)
+		if proto == "tcp" && cp > 0 {
+			exposed[cp] = true
+		}
 		for _, b := range binds {
 			hp, _ := strconv.Atoi(b.HostPort)
 			c.Ports = append(c.Ports, Published{HostIP: b.HostIP, HostPort: hp, ContainerPort: cp, Proto: proto})
 		}
 	}
+	c.Exposed = c.Exposed[:0]
+	for p := range exposed {
+		c.Exposed = append(c.Exposed, p)
+	}
+	sort.Ints(c.Exposed)
 	sort.Slice(c.Ports, func(i, j int) bool {
 		if c.Ports[i].HostPort != c.Ports[j].HostPort {
 			return c.Ports[i].HostPort < c.Ports[j].HostPort

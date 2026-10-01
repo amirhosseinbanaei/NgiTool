@@ -20,6 +20,26 @@ type Summary struct {
 	Stream *Pos  `json:"stream,omitempty"`
 	HTTP   *Pos  `json:"http,omitempty"`
 	Hook   *Hook `json:"hook,omitempty"`
+	// Maps are the http-level map {} blocks. NgiTool reuses an existing
+	// $connection_upgrade map instead of defining a second one (LB-06).
+	Maps []Map `json:"maps,omitempty"`
+}
+
+// Map is one http-level `map $source $var { … }`.
+type Map struct {
+	Source string            `json:"source"`
+	Var    string            `json:"var"` // without the $
+	Values map[string]string `json:"values,omitempty"`
+	Pos    Pos               `json:"pos"`
+}
+
+// Value is what the map gives for key, falling back to its default ("" when
+// it has none, like nginx).
+func (m Map) Value(key string) string {
+	if v, ok := m.Values[key]; ok {
+		return v
+	}
+	return m.Values["default"]
 }
 
 // Listen is one `listen` of a server.
@@ -226,6 +246,16 @@ func Summarize(tree []Directive) Summary {
 				s.Resolver = resolver(h)
 			case "upstream":
 				s.Upstreams = append(s.Upstreams, upstream(h))
+			case "map":
+				if len(h.Args) == 2 && h.HasBlock {
+					m := Map{Source: h.Args[0], Var: strings.TrimPrefix(h.Args[1], "$"), Values: map[string]string{}, Pos: h.Pos()}
+					for _, e := range h.Block {
+						if len(e.Args) == 1 {
+							m.Values[e.Name] = e.Args[0]
+						}
+					}
+					s.Maps = append(s.Maps, m)
+				}
 			}
 		}
 		for _, h := range d.Block {

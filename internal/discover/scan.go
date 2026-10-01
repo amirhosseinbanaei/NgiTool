@@ -162,5 +162,13 @@ func (s *Scanner) Report() *Report {
 	for _, in := range s.inst {
 		s.rep.Instances = append(s.rep.Instances, *in)
 	}
+	s.rep.Containers = s.rep.Containers[:0]
+	for _, c := range s.ctrs {
+		s.rep.Containers = append(s.rep.Containers, Container{
+			Name: c.Name, Image: c.Image, State: c.State, Running: c.Running, Project: c.Project, Service: c.Service,
+			NetworkMode: c.NetworkMode, Networks: c.Networks, DNS: c.DNS, Gateways: c.Gateways, Exposed: c.Exposed,
+			Ports: c.Ports, Instance: c.instance,
+		})
+	}
 	return s.rep
 }

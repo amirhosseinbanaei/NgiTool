@@ -205,11 +205,16 @@ func (s *Scanner) portOwners() {
 			want[p] = true
 		}
 	}
+	s.rep.Listeners = s.rep.Listeners[:0]
 	for _, l := range s.listeners {
+		o := s.owner(l)
+		s.rep.Listeners = append(s.rep.Listeners, o)
 		if want[l.Port] {
-			s.rep.Ports = append(s.rep.Ports, s.owner(l))
+			s.rep.Ports = append(s.rep.Ports, o)
 		}
 	}
+	sort.SliceStable(s.rep.Listeners, func(i, j int) bool { return s.rep.Listeners[i].Port < s.rep.Listeners[j].Port })
+	s.rep.Resolvers = s.nameservers()
 	sort.SliceStable(s.rep.Ports, func(i, j int) bool {
 		a, b := s.rep.Ports[i], s.rep.Ports[j]
 		if a.Port != b.Port {
@@ -244,4 +249,21 @@ func (s *Scanner) listening(host string, port int) bool {
 		}
 	}
 	return false
+}
+
+// nameservers are the host's resolvers from /etc/resolv.conf (under the
+// proc root's parent in tests): what a host nginx's `resolver` uses.
+func (s *Scanner) nameservers() []string {
+	b, err := os.ReadFile(filepath.Join(filepath.Dir(s.env.Proc), "etc", "resolv.conf"))
+	if err != nil {
+		return nil
+	}
+	var out []string
+	for _, line := range strings.Split(string(b), "\n") {
+		f := strings.Fields(line)
+		if len(f) >= 2 && f[0] == "nameserver" {
+			out = append(out, f[1])
+		}
+	}
+	return out
 }
