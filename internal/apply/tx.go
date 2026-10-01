@@ -65,6 +65,14 @@ type Change struct {
 	Summary  string   // "route add api.example.com"
 	Probe    []string // route ids to request afterwards
 	Include  *IncludeEdit
+	// Raw are other files without the NgiTool marker that this change
+	// writes whole: the edge stack's own files (cf-sync's real-IP list and
+	// AOP CA, upgrade-assets). Snapshotted and restored like Include.
+	Raw []IncludeEdit
+	// Legacy are host paths of files the legacy edge CLI wrote ("# Managed
+	// by edge"): the migration may replace or remove them although they
+	// lack NgiTool's marker. They are snapshotted like managed files.
+	Legacy   []string
 	Release  bool      // remove every NgiTool file of the instance
 	Snapshot *Manifest // rollback: these files instead of rendering
 }
@@ -218,6 +226,14 @@ func (t *tx) run(ctx context.Context) (*Result, error) {
 	if err != nil {
 		return nil, err
 	}
+	for _, p := range t.c.Legacy {
+		if _, ok := disk[p]; ok {
+			continue
+		}
+		if b, err := os.ReadFile(p); err == nil {
+			disk[p] = string(b)
+		}
+	}
 	want, err := t.build(t.c.Next)
 	if err != nil {
 		return nil, err
@@ -293,6 +309,22 @@ func (t *tx) run(ctx context.Context) (*Result, error) {
 			diffs = append(diffs, ui.UnifiedDiff(inc.File, inc.File, rawOld, inc.Content))
 		}
 	}
+	rawWrite := map[string]string{}
+	for _, r := range t.c.Raw {
+		b, err := os.ReadFile(r.File)
+		switch {
+		case errors.Is(err, os.ErrNotExist):
+			res.Added++
+			rawWrite[r.File] = r.Content
+			diffs = append(diffs, ui.UnifiedDiff("/dev/null", r.File, "", r.Content))
+		case err != nil:
+			return nil, err
+		case string(b) != r.Content:
+			res.Changed++
+			rawWrite[r.File] = r.Content
+			diffs = append(diffs, ui.UnifiedDiff(r.File, r.File, string(b), r.Content))
+		}
+	}
 	if len(diffs) == 0 {
 		res.NoChange = true
 		ui.Info("nginx files are already up to date " + ui.Muted("("+t.in.Name+")"))
@@ -330,6 +362,10 @@ func (t *tx) run(ctx context.Context) (*Result, error) {
 	if t.c.Include != nil {
 		raw = append(raw, t.c.Include.File)
 	}
+	for p := range rawWrite {
+		raw = append(raw, p)
+	}
+	sort.Strings(raw)
 	m, err := takeSnapshot(t.d.Paths.Backups, t.in.ID, t.d.Now(), t.c.Summary, res.Summary(), snapFiles, raw, t.d.Paths.State)
 	if err != nil {
 		return nil, fmt.Errorf("snapshot failed, nothing was changed: %w", err)
@@ -339,6 +375,9 @@ func (t *tx) run(ctx context.Context) (*Result, error) {
 
 	// Write: stage everything first so a full disk fails before any live
 	// file changes (APPLY-07, APPLY-09), then swap.
+	for p, c := range rawWrite {
+		write[p] = c
+	}
 	st, err := stageAll(write)
 	if err != nil {
 		return res, fmt.Errorf("%w — nothing was changed", err)
