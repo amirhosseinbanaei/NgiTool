@@ -8,7 +8,6 @@ import (
 	"path"
 	"strconv"
 	"strings"
-	"syscall"
 
 	"github.com/amirhosseinbanaei/NgiTool/internal/driver"
 	"github.com/amirhosseinbanaei/NgiTool/internal/nginxconf"
@@ -192,7 +191,7 @@ func (s *Scanner) writable(in *Instance, isOther bool, other string, invalid boo
 		if h.NeedsLine {
 			dir = path.Dir(target)
 		}
-		if err := syscall.Access(dir, 2); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		if err := s.env.access(dir, 2); err != nil && !errors.Is(err, fs.ErrNotExist) {
 			return no(dir + " is not writable: " + err.Error())
 		}
 		return yes("host files under " + dir)

@@ -89,6 +89,7 @@ func baseEnv(t *testing.T, run execx.Runner, have ...string) Env {
 		Getenv:   func(string) string { return "" },
 		Now:      func() time.Time { return time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC) },
 		UserName: func(uid int) string { return map[int]string{0: "root", 1000: "alice"}[uid] },
+		Access:   func(string, uint32) error { return nil },
 	}
 }
 

@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -49,6 +50,7 @@ func fakeMachine(t *testing.T) {
 				return "", errors.New("no")
 			},
 			UserName: func(int) string { return "root" },
+			Access:   func(string, uint32) error { return nil },
 		}
 	}
 	t.Cleanup(func() { newScanEnv = prev })
@@ -126,5 +128,26 @@ func TestInstancesGroupInMenuAndHelp(t *testing.T) {
 		if !strings.Contains(help, s) {
 			t.Errorf("help lacks %q", s)
 		}
+	}
+}
+
+// The write probe goes through discover.Env.Access, never the real
+// /etc/nginx: a CI runner with nginx installed and no root must not
+// change what the fake machine reports.
+func TestScanHostWriteUsesAccessProbe(t *testing.T) {
+	e, buf := sandbox(t)
+	fakeMachine(t)
+	fake := newScanEnv
+	newScanEnv = func(x *env) discover.Env {
+		d := fake(x)
+		d.Access = func(string, uint32) error { return syscall.EACCES }
+		return d
+	}
+
+	if err, code := execute(t, e, "scan"); code != 0 {
+		t.Fatalf("scan: %v\n%s", err, buf)
+	}
+	if out := buf.String(); !strings.Contains(out, "○ write") || !strings.Contains(out, "write: /etc/nginx/conf.d is not writable: permission denied") {
+		t.Errorf("denied probe not reported:\n%s", out)
 	}
 }
