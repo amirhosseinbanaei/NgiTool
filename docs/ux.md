@@ -140,3 +140,21 @@ is a Plan block plus a Tree.
 - **Tree targets** are coloured by reachability: `OK` reachable, `Err`
   missing or no shared network, `Warn` nothing listening; unknown stays plain.
   Every node's hint ends with its file:line.
+
+## 10. Routes, pools and changes
+
+- **Every change** shows a Plan block (what will exist), then the diff
+  grouped by file with one summary line ("2 files changed, 1 added, 0
+  removed"), then asks. Removals show the cascade first and an Explain panel.
+- **Edge-case IDs** end every refusal and warning, muted: `… (LB-02)`; the
+  fix follows on its own line after `→`.
+- **Health**: `OK` ● reached its upstream, `Err` ✖ answered 502/503/504 or
+  did not answer, `Muted` ○ not probed yet. The symbols differ so plain
+  output keeps the meaning.
+- **`route ls`** is a Tree per instance: host (TLS and port-80 mode as the
+  hint) → path → target or pool summary, with the last probe's status.
+- **The wizard** types only the hostname; everything else is a select or
+  the target checklist, whose rows are cut to one line (never wrapped) and
+  list targets on a shared network first.
+- **nginx -t failures** print nginx's lines muted, then the named file:line
+  with two lines around it and the offending line marked `❯` in `Err`.

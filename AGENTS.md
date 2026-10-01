@@ -17,10 +17,12 @@ load balancing**:
 It is the successor of the Node `edge` CLI in `cli/`, which keeps working
 (the live stack still uses it) until prompt 5 migrates and removes it.
 
-**What it is not (yet):** after prompt 2 it finds every nginx and reads its
-config (`scan`, `instances`, `inspect`), but it writes nothing: no routes or
-pools, no compose linking, no certificates. Those arrive in prompts 3–5. Only commands that work are registered — never a
-"coming soon" placeholder. TCP/UDP `stream` proxying, Kubernetes ingress and
+**What it is not (yet):** after prompt 3 it finds every nginx, reads its
+config, and writes reverse-proxy routes and load-balanced pools to the
+instances it was allowed to adopt — but it does not link compose projects,
+issue certificates or migrate the edge CLI's state. Those arrive in prompts
+4–5. Only commands that work are registered — never a "coming soon"
+placeholder. TCP/UDP `stream` proxying, Kubernetes ingress and
 NGINX Plus features are out of scope (see docs/edge-cases.md).
 
 ## Layout
@@ -32,7 +34,28 @@ internal/cli            one file per command group; app.go (root, exit codes,
                         items registry), help.go (help template), doctor.go
                         (checks registry), instances.go (scan, instances,
                         inspect, the scan cache), update.go, updatecheck.go,
-                        uninstall.go, completion.go, version.go, lock.go
+                        uninstall.go, completion.go, version.go, lock.go;
+                        prompt 3: txn.go (env.change — the one path to
+                        apply, validate, problem errors, instance choice),
+                        adopt.go (instance adopt|release), routes.go (route
+                        add wizard, ls, rm, enable, disable, edit), pools.go
+                        (pool …, member …, drain, switch, check), ops.go
+                        (diff, apply, rollback, test, reload), picker.go
+                        (member sources + checklist), certs.go (existing
+                        certificates on an instance)
+internal/model          routes, pools, members, adopted instances (state.json
+                        schema 2); parse.go (hostnames + punycode, paths,
+                        member specs, methods, sticky presets, Plus-only
+                        refusals); check.go (every validation rule with its
+                        edge-case ID); store.go (Load/Save)
+internal/render         go:embed text/templates (templates/*.tmpl) →
+                        files per instance layout; layout.go (Plan, LayoutOf,
+                        HostPath, marker + hash header, Parse); facts.go
+                        (version gates, resolver, gateway, maps, IPv6)
+internal/apply          the transaction: tx.go (Run), files.go (managed-file
+                        scan, staged writes), snapshot.go (backups, rotate,
+                        restore), drift.go (APPLY-05), probe.go (HTTP probe,
+                        502 causes, Cloudflare hints, health cache)
 internal/nginxconf      lexer.go, parser.go (AST, Format), load.go (nginx -T
                         splitter, Source: DumpSource/FileSource, include
                         resolver), summary.go (servers, locations, upstreams,
@@ -90,12 +113,12 @@ would roughly double the binary.
 
 | Path | What |
 |---|---|
-| `/etc/ngitool/config.json` | settings: `updateCheck`, `channel` (stable/prerelease), `scanRoots`, `frontDoor`, `pinned` |
-| `/var/lib/ngitool/state.json` | what NgiTool manages (schema only so far) |
+| `/etc/ngitool/config.json` | settings: `updateCheck`, `channel` (stable/prerelease), `scanRoots`, `frontDoor` (default instance for route add), `pinned`, `snapshots` |
+| `/var/lib/ngitool/state.json` | what NgiTool manages: `instances` (adopted), `pools`, `routes` (schema 2) |
 | `/var/lib/ngitool/.lock` | exclusive flock held by every mutating command |
-| `/var/lib/ngitool/backups/` | snapshots before every apply (prompt 3) |
+| `/var/lib/ngitool/backups/<instance>/<UTC time>/` | snapshot before every apply: `manifest.json`, `files/<n>`, `state.json`; the last 20 kept (config.json `snapshots`); `adopt-include/` holds the original of a hand-written file adopt edited |
 | `/var/lib/ngitool/overrides/` | compose overrides (prompt 4) |
-| `/var/cache/ngitool/` | `update-check.json`, `scan.json` (the last scan: summaries only, never a dump) |
+| `/var/cache/ngitool/` | `update-check.json`, `scan.json` (the last scan: summaries only, never a dump), `health.json` (last probe per route, last `pool check` per member) |
 
 `NGITOOL_ROOT=/dir` moves all of them to `/dir/etc`, `/dir/lib`, `/dir/cache`.
 `NGITOOL_PREFIX=/dir` makes the installer and `uninstall` use `/dir/bin`.
@@ -214,6 +237,129 @@ DISC-13, DISC-14. info: DOCK-15 (double proxy, who terminates TLS), DISC-01,
 DISC-11, DISC-15 (nobody on :80/:443, or not an nginx), DISC-16, DISC-17,
 RP-14.
 
+## Routes, pools and apply (prompt 3)
+
+### Model (`internal/model`, state.json schema 2)
+
+- **Route** `{id (host or host/path), instance, host, path ("" = whole
+  host), www, pool, enabled, http (redirect|serve), tls {name, cert, key,
+  names} or none, options, extra}`. Options: strip prefix, websocket (on),
+  buffering (on), body size, connect/read/send timeouts, extra headers,
+  upstream TLS {verify, serverName, ca}, Host header ("" = `$host`,
+  `$proxy_host`, or a name).
+- **Pool** `{name, instance, method, hashKey, consistent, sticky (preset
+  label), scheme (http|https|grpc|grpcs, one per pool), members, keepalive,
+  nextUpstream {conditions, tries, timeout}, errorPage, previous (blue/green),
+  extra}`. Upstream name `ngt_<pool>` (LB-13). Pool names are global.
+- **Member** `{kind: container | compose-service | host-port | address |
+  unix, ref, host (a DNS name or alias, never an IP — DOCK-16), port, weight,
+  backup, down, maxFails, failTimeout, maxConns}`. As a flag:
+  `container:NAME:PORT`, `service:PROJECT/SERVICE:PORT`, `port:PORT`,
+  `HOST:PORT` / `addr:` / `https://HOST`, `unix:/path`, then
+  `,weight=N,backup,down,max_fails=N,fail_timeout=T,max_conns=N`.
+- A single-target route is a pool of one member named after the host
+  (`api.example.com/v1` → `api_example_com_v1`); users meet pools only when
+  they add a second member.
+- **Adopted** `{id, kind, layout, root (nginx path), hostRoot, include
+  {file, line, text, backup} or none, adoptedAt}`.
+- Validation (`CheckRoute`, `CheckPool`) runs on the next state before
+  anything renders; every Problem carries its edge-case ID, a level (error,
+  warn, note) and a fix. The CLI prints the ID muted: `… (LB-02)`.
+
+### Render layouts (`internal/render`)
+
+Every file starts with the marker line and `# ngitool: <id> sha256:<body>`
+(ids: `instance`, `snippet`, `pool:<name>`, `route:<host>`,
+`route:<host/path>`); a body whose hash no longer matches is drift.
+
+| Layout | When | Files |
+|---|---|---|
+| host | host nginx | `/etc/nginx/ngitool/{upstreams,servers,locations/<host>}/`, `proxy.conf`, entry `<hook dir>/ngitool.conf` (or `/etc/nginx/ngitool/ngitool.conf` behind an adopted include line) |
+| edge | the edge stack | `sites/<host>.conf`, `locations/<host>/<slug>.conf`, `ngitool/upstreams/`, entry `conf.d/ngitool.conf`, `snippets/ngitool-proxy.conf`; edge-CLI files are left alone; reuses `conf.d/websocket.conf`'s map; includes `security-headers.conf` and `acme-challenge.conf` when present |
+| mount | container with a bind-mounted conf dir | `<mount>/ngitool/{upstreams,servers,locations}/`, `proxy.conf`, entry `<mount>/ngitool.conf` |
+
+- nginx ≥ 1.27.3 (Angie always): `upstream ngt_x { zone ngt_x <64k+>; <method>;
+  resolver …; server name:port resolve …; keepalive N; }` — names resolve at
+  runtime, so nginx starts while a member is down (RP-07, verified by hand).
+  Older: one member → `set $ngt_upstream …; proxy_pass http://$ngt_upstream`
+  with a server-level resolver; several → static server lines and the warning
+  "nginx will refuse to start if a name does not resolve." (LB-03).
+- Resolver: `127.0.0.11` for containers, the host's `/etc/resolv.conf`
+  nameservers for host nginx and host-network containers. Host ports from a
+  container go through the network's gateway (RP-06), from the host to
+  127.0.0.1.
+- `$connection_upgrade`: an existing map that gives `""` without Upgrade is
+  reused; one that gives `close` makes NgiTool render its own
+  `$ngt_connection_upgrade`; none → NgiTool renders the map (LB-06).
+- TLS servers get `http2 on` (≥ 1.25.1, else `listen … ssl http2`), HSTS on
+  redirect, `max-age=0` on serve, and a `ssl_reject_handshake` default server
+  in the entry when the instance has no default server on 443 (RP-18).
+- Path routes: `location = /p { return 301 /p/…; }` + `location /p/`;
+  strip is `rewrite ^/p/(.*)$ /$1 break;` (RP-23). A path route on a host an
+  existing edge site serves only drops its location file into that site's
+  `locations/<host>/` (RP-20 then warns about regex locations there).
+- Adopted hand edits (APPLY-05) are stored as `extra`: route lines go into
+  the location (`server:`-prefixed ones into the server), pool lines into the
+  upstream (`location:`-prefixed ones into the locations).
+- `render.Mutate` exists only so the integration test can break a file.
+
+### Transaction (`internal/apply.Run`, via `cli.env.change`)
+
+1. lock (`withLock`); state is re-loaded under the lock and the command's
+   change re-applied to a fresh copy;
+2. render the instance's full file set; a hand-written file at a target path
+   is a hard error (CONF-09);
+3. drift: managed files whose hash no longer matches are diffed (what
+   NgiTool wrote → disk) and the user picks overwrite, adopt or abort
+   (`--on-drift` off a terminal);
+4. coloured unified diff grouped by file, summary "N files changed, N added,
+   N removed", notes; `--dry-run` stops here (APPLY-08);
+5. confirm unless `--yes`;
+6. snapshot every managed file, every target path, the include file and
+   state.json (APPLY-06);
+7. stage every file next to its target (fsync), then rename them all; a
+   failure while staging changes nothing, a failure while swapping restores
+   the snapshot; the error names disk full / read-only (APPLY-07, APPLY-09);
+8. `nginx -t` through the driver; a failure restores the snapshot and prints
+   nginx's error with the offending file:line highlighted (APPLY-01);
+9. reload; for containers `docker logs --since` is read for `[emerg]` lines
+   (a bind failure after a passing test, APPLY-10); a failure restores the
+   snapshot, reloads again and reports both outputs (APPLY-03). A stopped
+   instance is tested with `docker run --rm` and not reloaded (APPLY-02);
+10. probe each touched route through the instance's own listener with its
+    Host header (Go HTTP, TLS unverified); anything but 502/503/504 counts as
+    reached; a failure prints the likely causes per member kind; no published
+    port → skipped with a hint;
+11. save state.json, rotate snapshots.
+
+`rollback` is the same transaction with the snapshot's files as the target
+set; only that instance's routes, pools and adoption come back from the
+snapshot's state.json, other instances keep today's.
+
+### Adopt rules
+
+- Required once per instance before any write; `instance release` undoes it.
+- Plan first: layout, directory (nginx and host path), and whether the
+  include already exists (`conf.d/*.conf` or `sites-enabled/*` inside http).
+- Otherwise one line `include <root>/ngitool.conf;  # NgiTool …` goes right
+  after the `{` of http in the hand-written file: its own Explain + confirm,
+  a backup in `backups/<instance>/adopt-include/`, written in place for a
+  single-file mount (CONF-07), CRLF kept (CONF-10). Release removes exactly
+  that line. It is the only edit NgiTool ever makes to a file it did not
+  write.
+- `write: false` instances are refused with the reason and what they would
+  need (CONF-06: copy the config out and mount it; prompt 4 writes the
+  compose override); other managers are refused (DISC-11).
+
+### Member picker
+
+`memberSources` in picker.go is a list of `{Title, Rows(report, instance)}`:
+compose services (from running containers' labels), plain containers, host
+ports (from `ss`, with the process or `docker-proxy → container`). Prompt 4
+appends "linked apps" there. Shared-network rows sort first; host-network
+instances get container rows disabled with the RP-05 reason; the last row is
+"✎ Enter an address manually…".
+
 ## UX rules
 
 See [docs/ux.md](docs/ux.md). In short: colours only through the roles in
@@ -225,8 +371,12 @@ typing is the last resort — discovered lists end with "✎ Enter it manually�
 
 ## Non-negotiables
 
-- Static binary, `CGO_ENABLED=0`, under the size budget (12 MB for
-  linux/amd64, `make size`); the dependency rule above.
+- Static binary, `CGO_ENABLED=0`, under the size budget (13 MB for
+  linux/amd64 since prompt 3, `make size`); the dependency rule above.
+- One transaction path for every nginx write (`apply.Run`); only files with
+  the NgiTool marker are rewritten or deleted; the adopted include line is
+  the only edit to a hand-written file; state is saved only after nginx -t
+  and reload succeed; no NGINX Plus directive is ever rendered.
 - Docker and nginx only through their CLIs via `internal/execx`.
 - Every interactive step has a flag equivalent and fails clearly off a TTY.
   Every list or inspect command has `--json`.
@@ -248,7 +398,8 @@ Both must pass before any commit:
 ```bash
 make check              # test -z "$(gofmt -l .)" && go vet ./... && go test ./... && make build && make size
 node cli/test/run.mjs   # the legacy CLI is untouched and must stay green
-NGITOOL_IT=1 go test ./internal/discover/...   # optional: real Docker, own container ngitool-it-scan on network ngitool-it
+NGITOOL_IT=1 go test ./...   # real Docker: discover (ngitool-it-scan, :18079) and cli
+                             # (ngitool-it-front on 127.0.0.1:18080, ngitool-it-b1..b3), network ngitool-it
 ```
 
 ## Testing safely
@@ -374,12 +525,43 @@ Decisions made while building prompt 2:
   list: one compose app's own image runs nginx 1.29.8 (found by `docker top`,
   DISC-10), and the edge front door proxies to it (DOCK-15).
 
+Decisions made while building prompt 3:
+
+- **Default method for a new multi-member pool: `least_conn`** (open
+  decision, the recommended choice). It degrades better than round robin
+  when request times are uneven; the wizard lists it first and says so.
+- **Snapshot retention: 20 per instance**, configurable with `snapshots` in
+  config.json (open decision, the recommended choice).
+- **Size budget raised from 12 MB to 13 MB.** prompt 3 grew `dist/ngitool`
+  from 11,821,216 to **12,599,456 bytes**: cli +~200 KB, model + render +
+  apply ~170 KB, text/template ~135 KB (the prompt asks for embedded
+  text/templates), the rest is metadata. Nothing big enough to trim was
+  left without dropping a required feature; ~400 KB remain for prompts 4–5.
+- Pools are global by name and belong to one instance; routes of one host
+  share its certificate, http mode and www (the first route of the host
+  decides).
+- A path error page (`--error-page /x`) must be served by another route on
+  that host, else nginx shows its own 502 (a note says so); URLs redirect.
+- `pool switch` keeps the old members as `backup`, or `down` when the method
+  cannot have backups (LB-02), until `--confirm` / `--revert`; interactively
+  it asks right after the apply.
+- `pool check` uses `docker run --rm --network <net> curlimages/curl` (curl's
+  own timing is reported), falling back to `docker exec <instance> wget` when
+  the image cannot be pulled; host-network instances use Go requests.
+- RP-04 (same host on two instances) is refused with the chain explanation
+  rather than chained automatically; chaining is an address member on the
+  front door.
+- A route whose instance has no published port for 80/443 is not probed
+  ("skipped with a hint", never faked).
+- Pre-existing, not fixed here: under NO_COLOR on a terminal the theme still
+  sends the OSC 11 / DSR background query (seen in prompt 2's binary too).
+
 ## Prompts
 
 | # | Branch | What | Status |
 |---|---|---|---|
 | 1 | `prompt-1-ngitool-foundation` | Go module, UI kit, help + root menu, paths/state/execx, version/update/uninstall/doctor/completion, install.sh, GoReleaser + CI, docs/edge-cases.md, docs/ux.md | done 2026-09-30 (unmerged, unpushed) |
 | 2 | `prompt-2-nginx-discovery` | nginxconf parser + dump splitter + includes + summary; discover (host, docker, compose-defined, edge, ports, capabilities, reachability, findings); drivers; `scan`, `instances`, `inspect`, doctor checks, Instances menu | done 2026-10-01 (unmerged, unpushed) |
-| 3 | `prompt-3-…` | routes, pools, render + apply with rollback (RP, LB, APPLY) | planned |
+| 3 | `prompt-3-proxy-balancer` | model, render (3 layouts, resolve vs fallback), apply transaction (snapshot, drift, test, reload, probe, rollback), instance adopt/release, route/pool commands + wizard, Routes/Load balancing/Apply menu groups | done 2026-10-01 (unmerged, unpushed) |
 | 4 | `prompt-4-…` | compose scanning, app lifecycle (DOCK) | planned |
 | 5 | `prompt-5-edge-migration` | edge stack, certificates, migrate edge.json, delete `cli/` (EDGE, CERT, MIG) | planned |
