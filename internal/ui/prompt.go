@@ -23,6 +23,7 @@ var (
 const (
 	manualValue = "\x00manual"
 	sepPrefix   = "\x00sep:"
+	emptyValue  = "\x00empty"
 	// ManualLabel ends every list that finds things automatically.
 	ManualLabel = SymPen + " Enter it manually…"
 )
@@ -64,6 +65,22 @@ func Select(o SelectOpts) (string, error) {
 	if o.Manual != nil {
 		opts = append(append([]Option{}, opts...), Option{Value: manualValue, Label: ManualLabel})
 	}
+	// huh draws the first frame one row off when an option's value is ""
+	// (the default row is hidden until a key is pressed): "" travels as a
+	// sentinel and comes back as "".
+	empty := false
+	for i, op := range opts {
+		if op.Value == "" && !op.sep {
+			if !empty {
+				opts = append([]Option{}, opts...)
+			}
+			empty = true
+			opts[i].Value = emptyValue
+		}
+	}
+	if empty && o.Default == "" {
+		o.Default = emptyValue
+	}
 	for {
 		value := o.Default
 		byValue := map[string]Option{}
@@ -100,6 +117,9 @@ func Select(o SelectOpts) (string, error) {
 		footer := Muted("↑↓ move · ↵ select · / filter · esc back")
 		if err := runField(field, field, summary, func() string { return footer }, nil); err != nil {
 			return "", err
+		}
+		if value == emptyValue {
+			return "", nil
 		}
 		if value != manualValue {
 			return value, nil
