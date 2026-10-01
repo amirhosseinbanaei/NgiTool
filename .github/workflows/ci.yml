@@ -19,10 +19,3 @@ jobs:
 
       - name: make check (gofmt, vet, test, build, size)
         run: make check
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 20
-
-      - name: legacy edge CLI tests
-        run: node cli/test/run.mjs

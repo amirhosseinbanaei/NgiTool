@@ -1,12 +1,12 @@
-# How a project running directly on the host (no Docker) joins nginx-edge.
+# How a project running directly on the host (no Docker) joins NgiTool's edge stack.
 # /etc/systemd/system/myapp.service
 #
 #   systemctl enable --now myapp
 #   ufw allow in on br-edge to any port 3001 proto tcp   # let the nginx container in
-#   edge site add myapp.example.com --port 3001
+#   ngitool route add myapp.example.com --to port:3001
 #
-# `edge status` shows the network's gateway IP and interface name; `edge site add`
-# prints the exact ufw line for your setup.
+# `ngitool edge status` shows the network's gateway IP; `route add` prints the
+# exact firewall line for your setup (RP-06).
 
 [Unit]
 Description=myapp
