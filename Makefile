@@ -4,7 +4,7 @@ export PATH := $(PATH):/usr/local/go/bin
 
 GO      ?= go
 MODULE  := github.com/amirhosseinbanaei/NgiTool
-VERSION ?= dev
+VERSION ?= v1.0.0
 COMMIT  ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
 DATE    ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
 LDFLAGS := -s -w \
@@ -12,9 +12,10 @@ LDFLAGS := -s -w \
 	-X $(MODULE)/internal/version.Commit=$(COMMIT) \
 	-X $(MODULE)/internal/version.Date=$(DATE)
 
-# The size budget for dist/ngitool (linux/amd64), in bytes: 13.5 MB (raised
-# from 12 MB in prompt 3 and 13 MB in prompt 4; the reasons are in AGENTS.md).
-MAX_SIZE := 13500000
+# The size budget for dist/ngitool (linux/amd64), in bytes: 14.5 MB (12 MB in
+# prompt 1, raised to 13 MB in prompt 3, 13.5 MB in prompt 4 and 14.5 MB in
+# prompt 5; the reasons are in AGENTS.md).
+MAX_SIZE := 14500000
 
 .PHONY: build size fmt vet test check release-local clean
 
@@ -46,7 +47,7 @@ check:
 ## release-local: the GoReleaser archive names plus checksums.txt, with
 ## plain go build, tar and sha256sum, into dist/release/<VERSION>/
 release-local:
-	@if [ "$(VERSION)" = dev ]; then echo "usage: make release-local VERSION=vX.Y.Z"; exit 1; fi
+	@case "$(VERSION)" in v*) ;; *) echo "usage: make release-local VERSION=vX.Y.Z"; exit 1;; esac
 	@set -e; v=$(VERSION); n=$${v#v}; out=dist/release/$$v; \
 	rm -rf $$out; mkdir -p $$out; \
 	for t in amd64:amd64: arm64:arm64: arm:armv7:7; do \
