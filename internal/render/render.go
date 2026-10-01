@@ -81,7 +81,7 @@ func Render(st *model.State, f Facts) (Output, error) {
 	}
 	l := f.Layout
 	for _, p := range st.PoolsOn(id) {
-		if !used[p.Name] {
+		if !used[p.Name] || p.Static() {
 			continue
 		}
 		if err := r.upstream(&p); err != nil {
@@ -345,13 +345,18 @@ func (r *renderer) host(host string, routes []model.Route) error {
 		resolver = r.f.Resolver
 	}
 	type srv struct {
-		Note, Names, Cert, Key, HSTS, Resolver, Body string
-		Listens, Includes, Extra                     []string
-		HTTP2                                        bool
+		Note, Names, Cert, Key, AOP, AOPCert, HSTS, Resolver, Body string
+		Listens, Includes, Extra                                   []string
+		HTTP2                                                      bool
 	}
 	var servers []srv
 	if t := lead.TLS; t != nil {
-		s := srv{Names: names, Cert: t.Cert, Key: t.Key, Resolver: resolver, Body: body, Includes: incl, Extra: extraOf(whole)}
+		// The edge stack answers ACME challenges over HTTPS too: Cloudflare's
+		// "Always Use HTTPS" turns a renewal's http:// request into https://.
+		s := srv{Names: names, Cert: t.Cert, Key: t.Key, Resolver: resolver, Body: body, Includes: withACME(incl, r.f.EdgeACME), Extra: extraOf(whole)}
+		if t.AOP && r.f.EdgeAOP != "" {
+			s.AOP, s.AOPCert = r.f.EdgeAOP, t.Name
+		}
 		if r.f.HTTP2Directive {
 			s.Listens, s.HTTP2 = port(r.f.HTTPSPort, "ssl"), true
 		} else {
@@ -458,6 +463,12 @@ func (r *renderer) location(rt model.Route) (map[string]any, error) {
 	data := map[string]any{"Path": "/"}
 	if rt.Path != "" {
 		data["Path"], data["Bare"] = rt.Path+"/", rt.Path
+	}
+	if p.Static() {
+		data["Lines"] = r.static(rt, p.Members[0])
+		return data, nil
+	}
+	if rt.Path != "" {
 		if o.StripPrefix {
 			// The exact slash combination for "strip" (RP-23): /api/x → /x.
 			add("rewrite ^" + regexp.QuoteMeta(rt.Path) + "/(.*)$ /$1 break;")
@@ -544,6 +555,20 @@ func (r *renderer) location(rt model.Route) (map[string]any, error) {
 	}
 	data["Lines"] = lines
 	return data, nil
+}
+
+// static is the body of a static-file location (EDGE-04), as the legacy
+// templates/body-static.tpl and path-static.conf.tpl wrote it.
+func (r *renderer) static(rt model.Route, m model.Member) []string {
+	dir := m.Ref
+	if !strings.HasPrefix(dir, "/") {
+		dir = path.Join(firstNonEmpty(r.f.WWW, "/var/www"), dir)
+	}
+	const spa = "# SPA fallback; for a multi-page site use: try_files $uri $uri/ =404;"
+	if rt.Path == "" {
+		return []string{"root " + dir + ";", spa, "try_files $uri $uri/ /index.html;"}
+	}
+	return []string{"alias " + dir + "/;", spa, "try_files $uri $uri/ " + rt.Path + "/index.html;"}
 }
 
 // external: every member is an address on an https pool — a service on

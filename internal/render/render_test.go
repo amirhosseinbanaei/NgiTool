@@ -36,7 +36,7 @@ func world(t *testing.T, kind, version string) (*discover.Report, *discover.Inst
 			Summary: &nginxconf.Summary{Hook: &nginxconf.Hook{Existing: "/etc/nginx/conf.d/*.conf", Dir: "/etc/nginx/conf.d"}}}
 	case discover.KindEdge:
 		src := t.TempDir()
-		for _, f := range []string{"snippets/security-headers.conf", "snippets/acme-challenge.conf"} {
+		for _, f := range []string{"snippets/security-headers.conf", "snippets/acme-challenge.conf", "snippets/cloudflare-aop.conf"} {
 			if err := os.MkdirAll(filepath.Dir(filepath.Join(src, f)), 0o755); err != nil {
 				t.Fatal(err)
 			}
@@ -157,6 +157,15 @@ func TestGolden(t *testing.T) {
 		{name: "tls-serve-no-hsts", pools: []model.Pool{pool("app", model.RoundRobin, web)}, routes: []model.Route{tlsRoute("app.example.com", "", "app", model.HTTPServe)}},
 		{name: "layout-host", kind: discover.KindHost, pools: []model.Pool{pool("app", model.RoundRobin, "port:3000"), pool("sock", model.RoundRobin, "unix:/run/app.sock")},
 			routes: []model.Route{tlsRoute("app.example.com", "", "app", model.HTTPRedirect), route("app.example.com", "/sock", "sock")}},
+		// EDGE-04 static routes as templates/body-static.tpl and path-static.conf.tpl wrote them; AOP per certificate.
+		{name: "edge-static-and-aop", kind: discover.KindEdge,
+			pools: []model.Pool{pool("site", model.RoundRobin, "static:example.com"), pool("docs", model.RoundRobin, "static:docs")},
+			routes: []model.Route{
+				withR(tlsRoute("example.com", "", "site", model.HTTPRedirect), func(r *model.Route) { r.WWW, r.TLS.AOP = true, true }),
+				withR(tlsRoute("example.com", "/docs", "docs", model.HTTPRedirect), func(r *model.Route) { r.TLS.AOP = true }),
+			}},
+		{name: "host-static", kind: discover.KindHost, pools: []model.Pool{pool("files", model.RoundRobin, "static:/srv/site")},
+			routes: []model.Route{route("files.example.com", "", "files")}},
 		{name: "layout-edge", kind: discover.KindEdge, pools: []model.Pool{pool("app", model.LeastConn, three...), pool("hostapp", model.RoundRobin, "port:8081")},
 			routes: []model.Route{tlsRoute("app.example.com", "", "app", model.HTTPRedirect), route("tools.example.com", "", "hostapp")}},
 		{name: "layout-mount", pools: []model.Pool{pool("app", model.RoundRobin, web), pool("other", model.RoundRobin, "addr:[2001:db8::10]:8080")},

@@ -29,7 +29,7 @@ upstream ngt_hostapp {
 
 === /etc/nginx/edge/sites/app.example.com.conf
 # Managed by NgiTool — generated from state; edit with ngitool, changes here are overwritten
-# ngitool: route:app.example.com sha256:70633e8c16a5c5a0792f95cd1e6a718e69704540ccb26bddf88df0ec97acff73
+# ngitool: route:app.example.com sha256:e921ac700541c93f3e6402632559376de9480428ab4a82674ea97407621308e4
 # app.example.com → web-1:3000, web-2:3000, web-3:3000 · least connections
 
 server {
@@ -43,6 +43,7 @@ server {
     absolute_redirect off;
     include /etc/nginx/edge/snippets/security-headers.conf;
     include /etc/nginx/edge/locations/app.example.com/*.conf;
+    include /etc/nginx/edge/snippets/acme-challenge.conf;
 
     location / {
         proxy_pass http://ngt_app;

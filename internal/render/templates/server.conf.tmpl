@@ -16,6 +16,10 @@ server {
     ssl_certificate     {{.Cert}};
     ssl_certificate_key {{.Key}};
 {{- end}}
+{{- if .AOP}}
+    # Authenticated Origin Pulls: only Cloudflare may connect (ngitool cert aop {{.AOPCert}} off)
+    include {{.AOP}};
+{{- end}}
 {{- if .HSTS}}
     {{.HSTS}}
 {{- end}}

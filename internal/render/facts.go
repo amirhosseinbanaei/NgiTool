@@ -32,8 +32,12 @@ type Facts struct {
 	HTTPSPort  int
 	IPv6       bool     // existing servers listen on [::] too (RP-15)
 	EdgeExtras []string // edge stack snippets every site includes
-	EdgeACME   string   // the edge stack's ACME challenge snippet, for :80 servers
-	DefaultSSL bool     // no default server on the TLS port yet: add one that rejects unknown SNI (RP-18)
+	EdgeACME   string   // the edge stack's ACME challenge snippet
+	EdgeAOP    string   // the edge stack's Authenticated Origin Pulls snippet
+	// WWW is where static folders are, as nginx sees them: /var/www on the
+	// edge stack; host instances use absolute directories.
+	WWW        string
+	DefaultSSL bool // no default server on the TLS port yet: add one that rejects unknown SNI (RP-18)
 }
 
 // MinResolve is the first nginx with `resolve` in open-source upstreams.
@@ -146,6 +150,10 @@ func GatherFacts(rep *discover.Report, in *discover.Instance, a *model.Adopted) 
 		if p := a.Root + "/snippets/acme-challenge.conf"; exists(p) {
 			f.EdgeACME = p
 		}
+		if p := a.Root + "/snippets/cloudflare-aop.conf"; exists(p) {
+			f.EdgeAOP = p
+		}
+		f.WWW = "/var/www"
 	}
 	return f
 }

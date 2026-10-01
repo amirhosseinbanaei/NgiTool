@@ -1,0 +1,71 @@
+=== /etc/nginx/edge/conf.d/ngitool.conf
+# Managed by NgiTool — generated from state; edit with ngitool, changes here are overwritten
+# ngitool: instance sha256:9684eebf42cec36f206c264f5d526eb2cc3dec41aecaed5375b7a622459585ee
+# edge-nginx-1: the one file its config includes; everything NgiTool serves hangs off it.
+
+include /etc/nginx/edge/ngitool/upstreams/*.conf;
+
+=== /etc/nginx/edge/locations/example.com/docs.conf
+# Managed by NgiTool — generated from state; edit with ngitool, changes here are overwritten
+# ngitool: route:example.com/docs sha256:4adf120fac930004f8aaf4939122e7af05d53da7eebbab175522a4c3a3ecf17f
+location = /docs { return 301 /docs/$is_args$args; }
+
+location /docs/ {
+    alias /var/www/docs/;
+    # SPA fallback; for a multi-page site use: try_files $uri $uri/ =404;
+    try_files $uri $uri/ /docs/index.html;
+}
+
+=== /etc/nginx/edge/sites/example.com.conf
+# Managed by NgiTool — generated from state; edit with ngitool, changes here are overwritten
+# ngitool: route:example.com sha256:2f56a9b6aac632716f8c441a630b9de043d1e2f309bc46513939f667ebf971aa
+# example.com → static:example.com
+
+server {
+    listen 443 ssl;
+    http2 on;
+    server_name example.com www.example.com;
+
+    ssl_certificate     /etc/ssl/example.com/fullchain.pem;
+    ssl_certificate_key /etc/ssl/example.com/privkey.pem;
+    # Authenticated Origin Pulls: only Cloudflare may connect (ngitool cert aop example.com off)
+    include /etc/nginx/edge/snippets/cloudflare-aop.conf;
+    add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+    absolute_redirect off;
+    include /etc/nginx/edge/snippets/security-headers.conf;
+    include /etc/nginx/edge/locations/example.com/*.conf;
+    include /etc/nginx/edge/snippets/acme-challenge.conf;
+
+    location / {
+        root /var/www/example.com;
+        # SPA fallback; for a multi-page site use: try_files $uri $uri/ =404;
+        try_files $uri $uri/ /index.html;
+    }
+}
+
+# Port 80 redirects to HTTPS (http: redirect).
+server {
+    listen 80;
+    server_name example.com www.example.com;
+    absolute_redirect off;
+    include /etc/nginx/edge/snippets/acme-challenge.conf;
+
+    location / { return 301 https://$host$request_uri; }
+}
+
+=== /etc/nginx/edge/snippets/ngitool-proxy.conf
+# Managed by NgiTool — generated from state; edit with ngitool, changes here are overwritten
+# ngitool: snippet sha256:4f02f40b3125f4bef3ba89c19f1cd73ba11a79bae57bf195fb696d57dfc806cb
+# Included by every proxied location NgiTool writes.
+proxy_http_version 1.1;
+proxy_set_header X-Real-IP         $remote_addr;
+proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+proxy_set_header X-Forwarded-Proto $scheme;
+proxy_set_header X-Forwarded-Host  $host;
+# Room for large response headers. Next.js, Nuxt, SvelteKit and Remix send preload Link
+# headers, auth cookies and framework headers that overflow nginx's 4k default, which
+# fails the request with 502 "upstream sent too big header" (RP-09).
+proxy_buffer_size       16k;
+proxy_buffers           8 16k;
+proxy_busy_buffers_size 32k;
+
