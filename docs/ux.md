@@ -158,3 +158,24 @@ is a Plan block plus a Tree.
   list targets on a shared network first.
 - **nginx -t failures** print nginx's lines muted, then the named file:line
   with two lines around it and the offending line marked `❯` in `Err`.
+
+## 11. Apps
+
+- **The link checklist** is grouped Running now, Stopped, Never started,
+  Other users' projects, Already linked. A row is the state dot and name,
+  a badge (the owner for other users, else `nginx`), then services, a `!
+  0.0.0.0:…` chip in `Warn` and the path (`~user/…`), all cut to one line.
+  Broken, already linked and reserved (the edge stack) rows are disabled
+  with the reason. The last row is "✎ Enter a compose file path
+  manually…", an input that shows what the path holds as it is typed.
+- **The file checklist** lists files in merge order with their role (base,
+  override, `<word>` variant, from the label) and says once: later files
+  override earlier ones.
+- **Every lifecycle action** prints the Explain panel, the service and
+  option checklists (each option one line; dangerous ones carry a `danger`
+  badge), then "Will run:" with each command in `Key`, then asks. Output
+  lines carry the service name in a rotating role colour (`ui.Series`)
+  and `│`; the summary table follows.
+- **Network chip** of an app: `OK` ✔ ok · `Err` ✖ detached / missing ·
+  `Warn` ○ stopped · `Muted` ○ not attached. A detached app always gets the
+  one-line why and `→ fix: ngitool app fix <app>`.

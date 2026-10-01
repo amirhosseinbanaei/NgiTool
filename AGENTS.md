@@ -17,11 +17,12 @@ load balancing**:
 It is the successor of the Node `edge` CLI in `cli/`, which keeps working
 (the live stack still uses it) until prompt 5 migrates and removes it.
 
-**What it is not (yet):** after prompt 3 it finds every nginx, reads its
-config, and writes reverse-proxy routes and load-balanced pools to the
-instances it was allowed to adopt — but it does not link compose projects,
-issue certificates or migrate the edge CLI's state. Those arrive in prompts
-4–5. Only commands that work are registered — never a "coming soon"
+**What it is not (yet):** after prompt 4 it finds every nginx, reads its
+config, writes reverse-proxy routes and load-balanced pools to the
+instances it was allowed to adopt, and links and runs Docker Compose
+projects as apps — but it does not run the edge stack's own commands, issue
+certificates or migrate the edge CLI's state. Those arrive in prompt 5.
+Only commands that work are registered — never a "coming soon"
 placeholder. TCP/UDP `stream` proxying, Kubernetes ingress and
 NGINX Plus features are out of scope (see docs/edge-cases.md).
 
@@ -42,7 +43,16 @@ internal/cli            one file per command group; app.go (root, exit codes,
                         (pool …, member …, drain, switch, check), ops.go
                         (diff, apply, rollback, test, reload), picker.go
                         (member sources + checklist), certs.go (existing
-                        certificates on an instance)
+                        certificates on an instance);
+                        prompt 4: apps.go (the `app` group: ls, show,
+                        attach, unlink, fix, the hidden per-app menu, the
+                        override writer), apps_link.go (link/scan
+                        checklist, file and profile steps, "Serve it now?",
+                        the Linked apps member source), apps_run.go
+                        (lifecycle: explain, checklists, Will run, streamed
+                        output, summary table), externalize.go (instance
+                        externalize, CONF-06). Named apps*.go because
+                        app.go is the root command.
 internal/model          routes, pools, members, adopted instances (state.json
                         schema 2); parse.go (hostnames + punycode, paths,
                         member specs, methods, sticky presets, Plus-only
@@ -68,7 +78,14 @@ internal/discover       scan.go (Scanner, steps), host.go (/proc, systemd,
                         findings.go, instance.go (Driver/Raw/Test for a
                         reported instance, the cache), model.go
 internal/driver         Driver interface; Host and Container (dump, test, reload)
-internal/compose        find.go: compose files under the scan roots (prompt 4 extends)
+internal/compose        find.go (patterns, roles, the walk), project.go
+                        (candidates merged with container labels, raw
+                        summary, docker ps), read.go (Bin v2/v1, Project
+                        args, `config` → Service summary, raw fallback),
+                        app.go (App, override render + meta, snippet),
+                        command.go (actions, options, exact argv), drift.go
+                        (DOCK-07), stream.go (compose output → per-service
+                        lines). Imports only execx and yaml.v3.
 internal/ui             theme.go (the ONLY colours), text.go (width, truncate,
                         cursor), components.go, task.go (spinner, steps),
                         diff.go, prompt.go (huh prompts), ask.go (flag rules)
@@ -114,10 +131,11 @@ would roughly double the binary.
 | Path | What |
 |---|---|
 | `/etc/ngitool/config.json` | settings: `updateCheck`, `channel` (stable/prerelease), `scanRoots`, `frontDoor` (default instance for route add), `pinned`, `snapshots` |
-| `/var/lib/ngitool/state.json` | what NgiTool manages: `instances` (adopted), `pools`, `routes` (schema 2) |
+| `/var/lib/ngitool/state.json` | what NgiTool manages: `instances` (adopted), `pools`, `routes`, `apps` (schema 3) |
 | `/var/lib/ngitool/.lock` | exclusive flock held by every mutating command |
 | `/var/lib/ngitool/backups/<instance>/<UTC time>/` | snapshot before every apply: `manifest.json`, `files/<n>`, `state.json`; the last 20 kept (config.json `snapshots`); `adopt-include/` holds the original of a hand-written file adopt edited |
-| `/var/lib/ngitool/overrides/` | compose overrides (prompt 4) |
+| `/var/lib/ngitool/overrides/<app>.yaml` | NgiTool's compose override per app, always the last `-f` |
+| `/var/lib/ngitool/externalized/<app>/` | an nginx config copied out of its image and bind-mounted back (CONF-06) |
 | `/var/cache/ngitool/` | `update-check.json`, `scan.json` (the last scan: summaries only, never a dump), `health.json` (last probe per route, last `pool check` per member) |
 
 `NGITOOL_ROOT=/dir` moves all of them to `/dir/etc`, `/dir/lib`, `/dir/cache`.
@@ -253,8 +271,10 @@ RP-14.
   extra}`. Upstream name `ngt_<pool>` (LB-13). Pool names are global.
 - **Member** `{kind: container | compose-service | host-port | address |
   unix, ref, host (a DNS name or alias, never an IP — DOCK-16), port, weight,
-  backup, down, maxFails, failTimeout, maxConns}`. As a flag:
-  `container:NAME:PORT`, `service:PROJECT/SERVICE:PORT`, `port:PORT`,
+  backup, down, maxFails, failTimeout, maxConns, app}`. As a flag:
+  `container:NAME:PORT`, `service:PROJECT/SERVICE:PORT`,
+  `app:APP/SERVICE:PORT` (prompt 4: stored as compose-service with `app`,
+  `ref` `<project>/<service>`, `host` the alias once attached), `port:PORT`,
   `HOST:PORT` / `addr:` / `https://HOST`, `unix:/path`, then
   `,weight=N,backup,down,max_fails=N,fail_timeout=T,max_conns=N`.
 - A single-target route is a pool of one member named after the host
@@ -348,17 +368,134 @@ snapshot's state.json, other instances keep today's.
   that line. It is the only edit NgiTool ever makes to a file it did not
   write.
 - `write: false` instances are refused with the reason and what they would
-  need (CONF-06: copy the config out and mount it; prompt 4 writes the
-  compose override); other managers are refused (DISC-11).
+  need (CONF-06: for a compose service `ngitool instance externalize <id>`
+  copies `/etc/nginx` to `/var/lib/ngitool/externalized/<app>/` and mounts
+  it through the app's override, linking the project first if needed);
+  other managers are refused (DISC-11).
 
 ### Member picker
 
-`memberSources` in picker.go is a list of `{Title, Rows(report, instance)}`:
-compose services (from running containers' labels), plain containers, host
-ports (from `ss`, with the process or `docker-proxy → container`). Prompt 4
-appends "linked apps" there. Shared-network rows sort first; host-network
-instances get container rows disabled with the RP-05 reason; the last row is
-"✎ Enter an address manually…".
+`memberSources` in picker.go is a list of `{Title, Rows(state, report,
+instance)}`: linked apps (prompt 4, `<app>/<service>` with state, ports and
+a network chip), compose services (from running containers' labels; a
+linked app's services are not listed twice), plain containers, host ports
+(from `ss`, with the process or `docker-proxy → container`). Shared-network
+rows sort first; host-network instances get container rows disabled with
+the RP-05 reason; the last row is "✎ Enter an address manually…".
+
+## Compose apps (prompt 4)
+
+### Finder (`compose.Scan`, `compose.Merge`)
+
+- Roots: config.json `scanRoots` (default `/home/*`, `/root`, `/opt`,
+  `/srv`, globs allowed), depth 4 below each root. `docker/`, `deploy/`,
+  `.docker/` and `infra/` are looked into even one level past the limit
+  (DOCK-01). Skipped: node_modules, vendor, dist, build, .git, .next,
+  .cache and every other hidden directory.
+- Patterns, case-sensitive like Docker: `compose.y(a)ml`,
+  `docker-compose.y(a)ml` (base); `compose.*.y(a)ml`,
+  `docker-compose.*.y(a)ml`, `*.compose.y(a)ml` — `override` anywhere in
+  the middle word is an override, any other word an env variant (dev, prod,
+  staging, local, …). Files a container label names that match nothing
+  (the legacy `edge.override.yaml`) are `extra`.
+- Merge order shown and pre-selected: base (compose.* before
+  docker-compose.*), overrides, variants by word, label-only files.
+  Default `-f` set: the running label (authoritative, DOCK-02), else the
+  first base plus its overrides, else the only file.
+- Symlinked directories are never followed (no loops, a project is found
+  once where it lives). A symlinked compose file that resolves into another
+  directory is a pointer: that directory is read instead (the legacy
+  `apps/<app>/compose.yaml` links). A symlink to a missing file and an
+  unreadable directory are candidates disabled with the reason (DOCK-10).
+- Candidates are merged with `docker ps -a` labels: project (`-p`, DOCK-03),
+  working dir, config_files. A project the walk did not reach is still
+  listed from its labels; label files that are gone are "missing — last
+  known path" (DOCK-10).
+- Name: the label, else `name:` in the first file, else the folder
+  (normalised like compose). Owner: the file's uid. State: running N of M,
+  stopped, never started (raw YAML gives services, networks and ports).
+  nginx badge: an nginx-like image, or an instance from the last scan
+  (DISC-10). The edge stack's directory is listed disabled: it is run by its
+  own commands (prompt 5), never as an app.
+
+### App model (state.json `apps`, schema 3)
+
+`{name, projectName, workingDir, files[] in merge order, profiles[],
+envFiles[] (only when chosen), overridePath, attachedServices {service:
+{network, alias, keys, manual}}, mounts {service: [{source, target,
+readOnly}]}, owner, linkedAt, lastAction}`. The name defaults to the
+project name, deduplicated `-2`, `-3` (cli/src/flows.mjs:829-833). It
+replaces the legacy `apps/` symlink folder; prompt 5 imports that folder.
+
+### Override rules
+
+- `/var/lib/ngitool/overrides/<app>.yaml` (0600), rendered from the app
+  (`compose.RenderOverride`); the project's own files are never edited.
+  It exists while a service is attached (not manually) or a config is
+  externalized, and is deleted when nothing needs it or the app is unlinked.
+- Line 4 is `# ngitool: {"app":…,"services":…,"mounts":…}` (`ParseMeta`
+  reads it back). Each attached service lists its own network keys as
+  `key: {}` (so it never falls off `default`) and joins `ngt_<network>`
+  (external, `name: <network>`) with the alias `<app>-<service>`. Routes use
+  that alias, never an IP (DOCK-16).
+- "I'll edit the compose file" prints `ManualSnippet` and records the
+  attachment as `manual` (left out of the override; drift checks only the
+  network).
+- `network_mode: host | none | service:x | container:x` cannot join: the
+  attach is refused with DOCK-06 and the host-port alternative.
+- A route (or `pool member add`) to a service off the instance's network
+  attaches it here instead of `docker network connect`: on a terminal the
+  choice override/snippet, then "Recreate now?" with the explain panel and
+  `up -d --no-deps <service>`; off a terminal only with `--connect` (then
+  override and recreate). `app attach` does the same on its own.
+
+### Every compose run
+
+`<bin> -p <project> --project-directory <dir> -f <file>… [-f <override>]
+[--env-file …] [--profile …] <step>`, cwd `<dir>`, `COMPOSE_PROJECT_NAME`
+and `COMPOSE_FILE` scrubbed (DOCK-08). `<bin>` is `docker compose`, or
+`docker-compose` with a one-time warning when only v1 exists (DOCK-05).
+`config --format json` is decoded without `environment`, labels or secrets
+(DOCK-04); on failure compose's last 3 lines are shown and the files are
+read as raw YAML, marked unresolved.
+
+### Actions (`compose.Steps`, golden-tested)
+
+| Action | Steps after the global args | Options (flag) |
+|---|---|---|
+| up | `up -d [--build] [--pull always] [--no-deps] [--remove-orphans] [svc…]` | --build, --pull, --no-deps, --remove-orphans |
+| restart | `restart [svc…]` | – |
+| recreate | `up -d --force-recreate [--no-deps] [svc…]` | --no-deps |
+| rebuild | `build [--no-cache] [--pull] svc…` then `up -d [--no-deps] svc…` (services with `build:` only) | --no-cache, --pull, --no-deps |
+| pull | `pull svc…` then `up -d svc…` (image-only services; the others are skipped with a note) | – |
+| stop | `stop [svc…]` | – |
+| down | `down [--volumes] [--remove-orphans]` (whole app) | --volumes, --remove-orphans |
+| logs | `logs [--follow] --tail N [--since T] [--timestamps] [svc…]` | --no-follow, --timestamps, --tail, --since |
+| ps | `ps -a --format json` → the summary table | – |
+| fix | `up -d --force-recreate --no-deps <detached services>` | – |
+
+Before running: heading, Explain (What it does / What it affects / How to
+undo — the text in `compose.Actions`), service checklist (all by default),
+options checklist (one line each, ticked from flags), "Will run:" with
+every command exactly, then the confirm: `--yes` off a terminal;
+`--volumes` lists the volumes and needs the typed project name (`--yes
+--force`); `--remove-orphans` needs the typed name on a terminal and
+`--yes` off one (DOCK-14). Output streams with a coloured service prefix
+(`ui.Series`); afterwards `lastAction` is recorded and a table shows
+container, state, health, on the proxy network, routes and a probe of each
+route through its instance. `logs` holds Ctrl-C for the child
+(`holdInterrupt`), so it returns to the menu.
+
+### Drift (`compose.Check`, DOCK-07)
+
+Per linked app, from `docker ps -a` labels: `missing` (files or dir gone,
+DOCK-10), `not attached` (nothing attached), `stopped` (nothing running),
+`detached` (a running attached service whose config_files lack the
+override, or that is not on its network: "started without NgiTool's
+override (plain docker compose up?) — its routes return 502"), else `ok`.
+Shown by `app ls` (red chip + `ngitool app fix <app>`), `route ls` (for apps
+with routes), doctor's "Linked apps" check (fails), and after every action.
+There is no `status` command yet; doctor carries it.
 
 ## UX rules
 
@@ -371,8 +508,11 @@ typing is the last resort — discovered lists end with "✎ Enter it manually�
 
 ## Non-negotiables
 
-- Static binary, `CGO_ENABLED=0`, under the size budget (13 MB for
-  linux/amd64 since prompt 3, `make size`); the dependency rule above.
+- Static binary, `CGO_ENABLED=0`, under the size budget (13.5 MB for
+  linux/amd64 since prompt 4, `make size`); the dependency rule above.
+- A project's own compose files are never edited; every compose run passes
+  `-p`, `--project-directory`, every `-f` and the override, with
+  `COMPOSE_PROJECT_NAME`/`COMPOSE_FILE` scrubbed.
 - One transaction path for every nginx write (`apply.Run`); only files with
   the NgiTool marker are rewritten or deleted; the adopted include line is
   the only edit to a hand-written file; state is saved only after nginx -t
@@ -399,7 +539,8 @@ Both must pass before any commit:
 make check              # test -z "$(gofmt -l .)" && go vet ./... && go test ./... && make build && make size
 node cli/test/run.mjs   # the legacy CLI is untouched and must stay green
 NGITOOL_IT=1 go test ./...   # real Docker: discover (ngitool-it-scan, :18079) and cli
-                             # (ngitool-it-front on 127.0.0.1:18080, ngitool-it-b1..b3), network ngitool-it
+                             # (ngitool-it-front on 127.0.0.1:18080, ngitool-it-b1..b3, compose projects
+                             # ngitool-it-app1/app2 in a temp dir), network ngitool-it
 ```
 
 ## Testing safely
@@ -556,6 +697,49 @@ Decisions made while building prompt 3:
 - Pre-existing, not fixed here: under NO_COLOR on a terminal the theme still
   sends the OSC 11 / DSR background query (seen in prompt 2's binary too).
 
+Decisions made while building prompt 4:
+
+- **`app scan --all` and other users' projects: only with
+  `--include-others`** (open decision, the recommended choice). Without
+  it `--all` links unlinked projects owned by the current user (root) and
+  skips the rest. Interactively, picking another user's project asks once
+  per owner, naming the owner (DOCK-09); ownership is never changed.
+- **Lifecycle output: condensed per-service by default, `--verbose` for
+  raw** (open decision, the recommended choice). Condensed keeps service
+  events (`Container x  Started`), build steps (`#7 [web 2/4] RUN …`),
+  log lines and anything mentioning error/failed/warn, and drops
+  BuildKit's bookkeeping (DONE, sha256, transferring …). Every line is
+  prefixed with its service in a rotating role colour.
+- **Size budget raised from 13 MB to 13.5 MB.** prompt 4 grew
+  `dist/ngitool` from 12,599,456 to **13,058,208 bytes** (+458 KB: the
+  compose package ~90 KB, the app commands with their help, explain and
+  option text ~250 KB, the rest type metadata). Nothing of that size could
+  go without dropping a required feature; ~440 KB remain for prompt 5.
+- The app commands live in `apps.go`, `apps_link.go`, `apps_run.go` (the
+  prompt said `app.go`, which is the root command since prompt 1).
+- `app link <path>` takes a directory or one compose file; `--file` sets
+  the `-f` list off a terminal, `--project-name` the `-p`.
+- An app member is `app:APP/SERVICE:PORT`; a `service:PROJECT/SERVICE`
+  member whose project is linked is recorded with its app too.
+- Attaching through a route is permanent (the override); plain containers
+  keep prompt 3's `docker network connect`, now hinting at `app link`.
+- `app fix` recreates only the detached services, with `--force-recreate
+  --no-deps`, so a service someone stopped on purpose stays stopped.
+- `externalize` mounts the copy writable: read-only was tried first and
+  broke a service that writes its config at start (the official image does
+  the same with `templates/`). It refuses a second externalized service in
+  the same app (one directory per app, as asked).
+- `runArgs` (menu → command in-process) reset repeatable flags with
+  `Set("[]")`, which appended a literal `[]`; slice flags are now cleared
+  with `Replace(nil)`. Found when "Serve it now?" passed `--to` through it.
+- `down` acts on the whole app (no service list); `ps` prints the summary
+  table instead of compose's raw table.
+- Integration tests share the `ngitool-it` network across packages. The
+  discover test usually creates it and finishes first, unable to remove it
+  while the cli tests are attached, so the compose-apps test (the last
+  one) always tries `docker network rm` at the end; it fails harmlessly
+  while anything still uses the network.
+
 ## Prompts
 
 | # | Branch | What | Status |
@@ -563,5 +747,5 @@ Decisions made while building prompt 3:
 | 1 | `prompt-1-ngitool-foundation` | Go module, UI kit, help + root menu, paths/state/execx, version/update/uninstall/doctor/completion, install.sh, GoReleaser + CI, docs/edge-cases.md, docs/ux.md | done 2026-09-30 (unmerged, unpushed) |
 | 2 | `prompt-2-nginx-discovery` | nginxconf parser + dump splitter + includes + summary; discover (host, docker, compose-defined, edge, ports, capabilities, reachability, findings); drivers; `scan`, `instances`, `inspect`, doctor checks, Instances menu | done 2026-10-01 (unmerged, unpushed) |
 | 3 | `prompt-3-proxy-balancer` | model, render (3 layouts, resolve vs fallback), apply transaction (snapshot, drift, test, reload, probe, rollback), instance adopt/release, route/pool commands + wizard, Routes/Load balancing/Apply menu groups | done 2026-10-01 (unmerged, unpushed) |
-| 4 | `prompt-4-…` | compose scanning, app lifecycle (DOCK) | planned |
+| 4 | `prompt-4-compose-apps` | compose finder (every pattern, labels, owners), app model (state schema 3), override writer + attach, lifecycle actions with explain/Will run/streamed output/summary, drift + `app fix`, `instance externalize`, Linked apps member source, Apps menu group, doctor apps check | done 2026-10-01 (unmerged, unpushed) |
 | 5 | `prompt-5-edge-migration` | edge stack, certificates, migrate edge.json, delete `cli/` (EDGE, CERT, MIG) | planned |
