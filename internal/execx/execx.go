@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -27,7 +28,10 @@ var ComposeScrub = []string{"COMPOSE_PROJECT_NAME", "COMPOSE_FILE"}
 type Opts struct {
 	Dir     string
 	Stdin   io.Reader
-	Inherit bool          // stream to the terminal instead of capturing
+	Inherit bool // stream to the terminal instead of capturing
+	// Out, when set, receives stdout and stderr as they are written (both
+	// are still captured for the result and its error tail).
+	Out     io.Writer
 	Env     []string      // KEY=VALUE additions, override the parent's
 	Scrub   []string      // names removed from the child's environment
 	Timeout time.Duration // 0 = only the context's deadline
@@ -84,9 +88,13 @@ func Run(ctx context.Context, name string, args []string, o Opts) Result {
 	cmd.WaitDelay = 2 * time.Second
 
 	var stdout, stderr bytes.Buffer
-	if o.Inherit {
+	switch {
+	case o.Inherit:
 		cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
-	} else {
+	case o.Out != nil:
+		w := &lockedWriter{w: o.Out}
+		cmd.Stdin, cmd.Stdout, cmd.Stderr = o.Stdin, io.MultiWriter(&stdout, w), io.MultiWriter(&stderr, w)
+	default:
 		cmd.Stdin, cmd.Stdout, cmd.Stderr = o.Stdin, &stdout, &stderr
 	}
 	err := cmd.Run()
@@ -174,4 +182,16 @@ type systemRunner struct{}
 
 func (systemRunner) Run(ctx context.Context, name string, args []string, o Opts) Result {
 	return Run(ctx, name, args, o)
+}
+
+// lockedWriter serialises stdout and stderr into one stream.
+type lockedWriter struct {
+	mu sync.Mutex
+	w  io.Writer
+}
+
+func (l *lockedWriter) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.w.Write(p)
 }
