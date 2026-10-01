@@ -6,25 +6,26 @@ first; update it when you change something it describes.
 ## What NgiTool is
 
 NgiTool is a single static Go binary, `ngitool` (installed with a short alias
-`ngt`), that will manage **every nginx on a server** for **reverse proxy and
+`ngt`), that manages **every nginx on a server** for **reverse proxy and
 load balancing**:
 
 - host-installed nginx (systemd or not, several masters),
 - nginx in plain Docker containers,
 - nginx inside Docker Compose projects,
-- its own bundled "edge" nginx stack (this repository's `compose.yaml`).
+- its own bundled "edge" nginx + certbot stack (`ngitool edge …`, assets
+  embedded in the binary).
 
-It is the successor of the Node `edge` CLI in `cli/`, which keeps working
-(the live stack still uses it) until prompt 5 migrates and removes it.
-
-**What it is not (yet):** after prompt 4 it finds every nginx, reads its
-config, writes reverse-proxy routes and load-balanced pools to the
-instances it was allowed to adopt, and links and runs Docker Compose
-projects as apps — but it does not run the edge stack's own commands, issue
-certificates or migrate the edge CLI's state. Those arrive in prompt 5.
+It finds every nginx, reads its config, writes routes and load-balanced pools
+to the instances it was allowed to adopt, links and runs Docker Compose
+projects as apps, runs its edge stack, issues certificates (Let's Encrypt
+through certbot, Cloudflare Origin CA, custom, self-signed), keeps
+Cloudflare DNS records, serves static folders, removes things with their
+cascade, and migrates an nginx-edge directory. It replaced the Node `edge`
+CLI (deleted in prompt 5; every legacy test has a Go test, see below).
 Only commands that work are registered — never a "coming soon"
-placeholder. TCP/UDP `stream` proxying, Kubernetes ingress and
-NGINX Plus features are out of scope (see docs/edge-cases.md).
+placeholder. TCP/UDP `stream` proxying, rate limiting, caching, WAF,
+Kubernetes ingress and NGINX Plus features are out of scope for v1.0.0
+(see "Next steps").
 
 ## Layout
 
@@ -52,9 +53,20 @@ internal/cli            one file per command group; app.go (root, exit codes,
                         (lifecycle: explain, checklists, Will run, streamed
                         output, summary table), externalize.go (instance
                         externalize, CONF-06). Named apps*.go because
-                        app.go is the root command.
-internal/model          routes, pools, members, adopted instances (state.json
-                        schema 2); parse.go (hostnames + punycode, paths,
+                        app.go is the root command;
+                        prompt 5: edge.go (edge init|up|down|restart|status|
+                        logs|cf-sync|upgrade-assets, adoptEdge, stackFiles),
+                        certissue.go (where certificates go per instance,
+                        issue: certbot in the stack or on the host, Origin CA,
+                        custom, self-signed, the HTTP-01 preflight), certcmd.go
+                        (cert ls|add|renew|rm|aop, certbot pass-through),
+                        remove.go (rm, reset, www, domain: one removal flow),
+                        migrate.go (migrate edge, backup); routes.go gained the
+                        DNS step and "Issue a new certificate…", picker.go the
+                        Static files source.
+internal/model          routes, pools, members, adopted instances, certs,
+                        domains, edge stacks (state.json schema 4);
+                        remove.go (PlanRemoval: the cascade, extras); parse.go (hostnames + punycode, paths,
                         member specs, methods, sticky presets, Plus-only
                         refusals); check.go (every validation rule with its
                         edge-case ID); store.go (Load/Save)
@@ -86,9 +98,22 @@ internal/compose        find.go (patterns, roles, the walk), project.go
                         command.go (actions, options, exact argv), drift.go
                         (DOCK-07), stream.go (compose output → per-service
                         lines). Imports only execx and yaml.v3.
+internal/edge           assets/ (compose.yaml, conf/, templates/ — go:embed),
+                        edge.go (layout, Write, Outdated, .env, token file,
+                        www/), stack.go (compose with -p, status, networks,
+                        preconditions, EDGE-01/03, Image)
+internal/certs          certs.go (kinds, coverage, PEM inspect/validate, Store
+                        0600, self-signed, key + CSR), acme.go (HTTP-01
+                        preflight, certbot arguments, renew output)
+internal/cloudflare     the API v4 client (verify, zones, A records, Origin
+                        CA), public IP, cf-sync (real-IP ranges, AOP CA)
+internal/migrate        legacy.go (read an nginx-edge dir, the legacy renderer
+                        ported for MIG-02), plan.go (mapping onto state),
+                        compare.go (effective config: per port and host),
+                        dryrun.go (scratch copy, render, nginx -t, compare)
 internal/ui             theme.go (the ONLY colours), text.go (width, truncate,
-                        cursor), components.go, task.go (spinner, steps),
-                        diff.go, prompt.go (huh prompts), ask.go (flag rules)
+                        cursor), components.go (+ DaysLeft), task.go (spinner,
+                        steps), diff.go, prompt.go (huh prompts), ask.go
 internal/paths          every path, NGITOOL_ROOT / NGITOOL_PREFIX
 internal/state          atomic writes, flock, JSON stores with schema + migrations
 internal/execx          process runner (docker, docker compose, nginx)
@@ -98,7 +123,9 @@ install.sh              curl | sh installer (POSIX sh)
 .goreleaser.yaml        release build; .github/workflows/{ci,release}.yml
 docs/ux.md              terminal UX rulebook
 docs/edge-cases.md      master exception list, referenced by ID
-cli/, conf/, templates/, compose.yaml, package.json   legacy nginx-edge (do not touch until prompt 5)
+docs/migration.md       the nginx-edge → NgiTool runbook
+docs/examples/          a compose project and a systemd unit joining the edge stack
+CHANGELOG.md            user-facing changes per release
 ```
 
 Adding things later:
@@ -136,7 +163,9 @@ would roughly double the binary.
 | `/var/lib/ngitool/backups/<instance>/<UTC time>/` | snapshot before every apply: `manifest.json`, `files/<n>`, `state.json`; the last 20 kept (config.json `snapshots`); `adopt-include/` holds the original of a hand-written file adopt edited |
 | `/var/lib/ngitool/overrides/<app>.yaml` | NgiTool's compose override per app, always the last `-f` |
 | `/var/lib/ngitool/externalized/<app>/` | an nginx config copied out of its image and bind-mounted back (CONF-06) |
+| `/var/lib/ngitool/backups/migrate-<UTC time>/` | `migrate edge`'s copy of the directory's conf/, apps/, edge.json and .env, taken before anything changes |
 | `/var/cache/ngitool/` | `update-check.json`, `scan.json` (the last scan: summaries only, never a dump), `health.json` (last probe per route, last `pool check` per member) |
+| `/opt/ngitool/edge/` | the default edge stack directory (`edge init [dir]`); its layout is in internal/edge/edge.go and the README |
 
 `NGITOOL_ROOT=/dir` moves all of them to `/dir/etc`, `/dir/lib`, `/dir/cache`.
 `NGITOOL_PREFIX=/dir` makes the installer and `uninstall` use `/dir/bin`.
@@ -172,7 +201,8 @@ reads. The report is cached in `scan.json`.
 | `methods` | the exact dump / test / reload commands |
 
 Edge detection: a compose project whose working dir has `compose.yaml`,
-`conf/nginx.conf` and the edge CLI (`edge` or `cli/src`).
+`conf/nginx.conf` and NgiTool's marker `.ngitool-edge` (written by `edge
+init` and the migration) or the legacy edge CLI (`edge` or `cli/src`).
 
 A container is a candidate when its image is nginx-like (any path part
 `nginx`, `nginx-*`, `openresty`, `angie`, `tengine`, `swag`), when `docker top`
@@ -497,6 +527,157 @@ Shown by `app ls` (red chip + `ngitool app fix <app>`), `route ls` (for apps
 with routes), doctor's "Linked apps" check (fails), and after every action.
 There is no `status` command yet; doctor carries it.
 
+## Edge stack, certificates, migration (prompt 5)
+
+### Edge stack (`internal/edge`, `cli/edge.go`)
+
+- Assets are embedded (`internal/edge/assets`, `go:embed all:assets`):
+  compose.yaml, conf/ (nginx.conf, start.sh with the 6 h reload loop,
+  conf.d/, snippets/, sites/00-default.conf), templates/ (the legacy
+  templates, used by the migration's legacy renderer and for placeholder
+  pages), env.example, secrets/cloudflare.ini.example. `edge init` writes
+  compose.yaml and conf/ (not templates/: nothing reads them from disk any
+  more), the directories, `.ngitool-edge` (the marker discovery recognises
+  next to the legacy `edge`/`cli/src`), .env (0600) and
+  secrets/cloudflare.ini (0600 in a 0700 dir). Existing files that differ
+  are kept and reported; `edge upgrade-assets` diffs and replaces them.
+- Machine state is never replaced by upgrade-assets: conf/sites,
+  conf/locations, conf/snippets/ssl, conf/certs, conf.d/cloudflare-realip.conf,
+  NgiTool's own files, data/, secrets/, www/, .env.
+- `state.json` `edges` records `{dir, project, instance}`; the stack's nginx
+  is instance `edge:<dir>`, adopted automatically after `edge up` (layout
+  edge), so routes, pools and the transaction work on it unchanged.
+- Every stack command: `docker compose -p <project> --project-directory <dir>
+  -f <dir>/compose.yaml …`, COMPOSE_PROJECT_NAME/COMPOSE_FILE scrubbed. The
+  project comes from `--project-name`, else $COMPOSE_PROJECT_NAME at init,
+  else `edge`; a non-default one is also written to .env so a manual
+  `docker compose` in the directory finds it.
+- `edge up` checks EDGE-03 (another project runs from the dir), EDGE-01
+  (ports held by someone else, from the scan's listeners), then the legacy
+  preconditions (network — EDGE-02, created on request; cloudflare.ini a
+  file; data/acme), then `up -d --quiet-pull --remove-orphans`, then adopts.
+- cf-sync and upgrade-assets write the stack's own nginx files through
+  `apply.Change.Raw` (snapshotted, tested, reloaded, restored on failure);
+  only `edge init`, before anything runs, writes them directly.
+
+### Certificates (`internal/certs`, `cli/certissue.go`, `cli/certcmd.go`)
+
+- state.json `certs`: `{name, instance, kind, challenge, names, aop, cert,
+  key (nginx paths), hostCert, hostKey, certbot (stack|host),
+  authenticator, webroot}`. A route's `tls` copies name, paths, names, aop.
+- Where files go: edge stack — data/letsencrypt/live/<name>/ (certbot) and
+  data/certs/<name>/ (others), seen by nginx as /etc/letsencrypt/live and
+  /etc/edge-certs; host and mount layouts — `<adopted root>/certs/<name>/`.
+  Keys 0600, dirs 0700.
+- Let's Encrypt on the stack: `run --rm --no-deps --entrypoint certbot
+  certbot certonly …` (webroot /var/acme or DNS-01 with
+  /secrets/cloudflare.ini). HTTP-01 is preflighted first (needs the stack
+  running and data/acme mounted). On host nginx: host certbot, nginx plugin
+  or `--webroot` (CERT-05); without certbot the options are disabled with
+  the install command.
+- Self-signed (ECDSA P-256, 90 days) and the Origin CA key + CSR (RSA 2048,
+  origin-rsa, 15 years) are made in Go: no openssl needed.
+- The route wizard's TLS step lists NgiTool's certificates, then the ones
+  found on the instance, then "Issue a new certificate…" (`--issue KIND`);
+  a new certificate is issued after its own confirm and deleted again when
+  the route's transaction fails or is a dry run.
+- AOP: `cert aop <name> on|off` sets it on the cert and every route using
+  it; the edge layout renders `include <root>/snippets/cloudflare-aop.conf`
+  in the server.
+
+### Cloudflare (`internal/cloudflare`)
+
+- Endpoints are package variables (tests point them at httptest). The token
+  is read from the instance's stack (secrets/cloudflare.ini), another
+  stack's, or $CLOUDFLARE_API_TOKEN, sent only as the Authorization header
+  to the API base, never printed or stored in state.
+- The route wizard's DNS step appears only when the instance's stack has a
+  token, only for whole-host routes: proxied / dns-only / skip (`--dns`),
+  stored as `route.dns`. For HTTP-01 the record is written before certbot
+  runs, otherwise after the transaction. UpsertA refuses to replace a CNAME.
+
+### Static routes (EDGE-04)
+
+- Member kind `static`, Ref a folder under www/ (edge) or an absolute dir
+  (host); a static pool has exactly one member and renders no upstream.
+  Rendered as the legacy body-static/path-static templates (root + SPA
+  fallback; alias for paths). New folders get templates/index.html.tpl.
+
+### Removal (`model/remove.go`, `cli/remove.go`)
+
+- `PlanRemoval(state, target, wwwExists)` is pure: routes (a host takes its
+  paths; a domain its hosts but not those of a more specific domain; an app
+  its routes, or only its members in shared pools; a certificate its routes
+  unless `--cert-to` moves them; a folder the routes serving it), pools left
+  without routes, and the extras left unused (certs, folders, DNS records,
+  app containers). `ApplyOn(next, instance)` is the nginx part of one
+  instance (one transaction each), `ApplyState` the rest (after nginx
+  accepted). Extras: `--purge` all, `--purge-dns` DNS, a terminal asks
+  (certs pre-ticked); kept ones are named afterwards.
+
+### Migration (`internal/migrate`, `cli/migrate.go`)
+
+- Read: .env, edge.json (certs, domains, sites, paths incl. enabled:false,
+  http:"serve", strip, aop, challenge), apps/<name>/ (symlink, override and
+  its `# edge: {...}` line), whether a token exists (never its value), and
+  the route files split into `# Managed by edge` and hand-written.
+- Map: sites/paths → routes + single-member pools (app → compose-service
+  of the linked app with Host = the legacy upstream, container, port →
+  host-port, static); certs registered in place; domains keep zone ids; apps
+  linked with the same files, project from the running label, else `name:`,
+  else the folder; overrides move to /var/lib/ngitool/overrides/<app>.yaml.
+- Dry run: copy conf/ to a scratch dir, drop the legacy files there, render
+  NgiTool's files (the legacy files count as NgiTool's own for RP-03 and the
+  attach logic), nginx -t with the stack's image and mounts (`docker run
+  --rm --network none --pull never`), then `Compare(Effective(old),
+  Effective(new))`: for every port and exact host name, the server nginx
+  would pick, its cert/key, ssl_verify_client, return, and each location's
+  normalised behaviour (proxy targets through `set` and upstream blocks).
+  Differences, drift (MIG-02), nginx -t failures and mapping errors are
+  blockers; RP-03/RP-04 conflicts that exist today are warnings.
+- Real run: the same checks, a full backup, then one transaction with
+  `Change.Legacy` (the legacy files may be replaced or removed), the
+  mapping re-applied to the locked state, and every route probed. Then the
+  overrides, the marker, and edge.json → edge.json.migrated.
+
+### Legacy tests → Go tests
+
+Every test of the deleted `cli/test/run.mjs`, and where its behaviour is
+proven now:
+
+| Legacy test | Go test |
+|---|---|
+| parses commands, values and booleans | cobra/pflag; cli TestMissingValueOffTTYNamesTheFlag, TestUnknownFlagIsUsageError |
+| --no-<flag> sets a boolean false; unset stays undefined | reason: NgiTool has explicit `--no-*` flags (`--no-strip`, `--no-www`, `--no-websocket`, …) parsed by pflag; covered where used (cli TestRouteLifecycle) |
+| rejects unknown options and missing values | cli TestUnknownFlagIsUsageError, TestMissingValueOffTTYNamesTheFlag |
+| parseTarget normalises scheme, case and slashes | model TestLegacyTargets, TestHostnamesAndPaths |
+| wildcards cover exactly one level | certs TestWildcardsCoverExactlyOneLevel |
+| domainOf picks the longest configured suffix | certs TestDomainOfAndDepth |
+| sourceFromFlags builds each source type | model TestLegacySourcesAreMembers (app, container, port, static); edge TestStaticFolders (www/ normalisation, no escapes). "Choose one source" is replaced: two `--to` make a pool |
+| validatePath refuses the root and odd characters | model TestLegacyTargets (the root is the whole host in NgiTool, not an error) |
+| parseEnv reads values, strips quotes, skips comments | edge TestParseEnv |
+| setEnvText replaces in place, uncomments, or appends | edge TestSetEnvText |
+| render drops lines that hold only an empty token | edge TestFillDropsLinesOfEmptyTokens |
+| buildFiles writes one file per cert, enabled site and path | migrate TestLegacyBuildFiles (the legacy renderer); render goldens for NgiTool's own files |
+| apex gets www when its cert covers it; upstreams and certs are wired | migrate TestLegacyBuildFiles, TestMappingOfEverySourceType (WWW, TLS); render golden apex-www, edge-static-and-aop |
+| path routes: strip adds a rewrite, keep does not | migrate TestLegacyBuildFiles; render golden path-strip-and-keep, edge-static-and-aop (alias) |
+| buildFiles refuses a site whose cert is unknown | migrate TestLegacyBuildFiles; MIG-01 blocker in plan.go |
+| writeFiles syncs managed files and never touches hand-written ones | apply TestTestFailureRestoresTheSnapshot, TestDriftIsShownAndAsked and the CONF-09 check in apply.Run; migrate TestDryRunVerdict (hand-written files kept) |
+| summarizeServices reads ports, networks and aliases only | compose TestSummarizeServices |
+| override keeps existing networks and adds the edge one | compose TestOverrideRenderAndRoundTrip |
+| finds compose files and derives app names | compose TestScanFixtureTree, TestClassify |
+| removing a host takes its paths; unused cert, folder and DNS become extras | model TestRemovingAHostTakesItsPaths |
+| removing a domain keeps hosts of a more specific domain | model TestRemovingADomainKeepsHostsOfAMoreSpecificDomain |
+| removing an app drops every route that points at it | model TestRemovingAnAppDropsEveryRouteToIt |
+| removing a cert: move its hosts to a covering cert, or drop them | model TestRemovingACertMovesOrDropsItsHosts |
+| removing a static folder drops the routes serving it; reset drops everything | model TestRemovingAStaticFolderAndReset; cli TestRemovalNeedsForceOffATerminal |
+| writeFiles removes empty location dirs of hosts that are gone | apply removeEmptyDirs, exercised by cli TestRouteLifecycle (route rm) |
+| letsencrypt entries without a challenge are DNS-01; labels say which | certs TestChallengeAndLabel; migrate TestMappingOfEverySourceType |
+| plain HTTP: serve adds a :80 server and turns HSTS off for that host only | migrate TestLegacyBuildFiles; render golden tls-serve-no-hsts |
+| shared snippets: no HSTS in security-headers, scheme-aware X-Forwarded-Proto | edge TestSharedSnippets |
+| generated sites answer ACME challenges | migrate TestLegacyBuildFiles; render golden layout-edge, edge-static-and-aop (also on HTTPS) |
+| decode turns escape sequences and control keys into names | reason: the hand-written key decoder is replaced by bubbletea/huh; NgiTool's prompt behaviour is checked in a private tmux (docs/ux.md, SYS-09) |
+
 ## UX rules
 
 See [docs/ux.md](docs/ux.md). In short: colours only through the roles in
@@ -508,8 +689,8 @@ typing is the last resort — discovered lists end with "✎ Enter it manually�
 
 ## Non-negotiables
 
-- Static binary, `CGO_ENABLED=0`, under the size budget (13.5 MB for
-  linux/amd64 since prompt 4, `make size`); the dependency rule above.
+- Static binary, `CGO_ENABLED=0`, under the size budget (14.5 MB for
+  linux/amd64 since prompt 5, `make size`); the dependency rule above.
 - A project's own compose files are never edited; every compose run passes
   `-p`, `--project-directory`, every `-f` and the override, with
   `COMPOSE_PROJECT_NAME`/`COMPOSE_FILE` scrubbed.
@@ -522,6 +703,8 @@ typing is the last resort — discovered lists end with "✎ Enter it manually�
   Every list or inspect command has `--json`.
 - No raw colour codes outside `internal/ui/theme.go`. NO_COLOR is honoured everywhere.
 - Never print or store resolved compose environment or secrets.
+- Never print or store the Cloudflare token or private keys; secrets files
+  are 0600 in 0700 directories.
 - During development never touch the live stack (`/root/srv/nginx`), running
   containers of other projects, host nginx, `/usr/local/bin`, or the real
   `/etc/ngitool`, `/var/lib/ngitool`, `/var/cache/ngitool`. Tests use
@@ -537,10 +720,11 @@ Both must pass before any commit:
 
 ```bash
 make check              # test -z "$(gofmt -l .)" && go vet ./... && go test ./... && make build && make size
-node cli/test/run.mjs   # the legacy CLI is untouched and must stay green
-NGITOOL_IT=1 go test ./...   # real Docker: discover (ngitool-it-scan, :18079) and cli
-                             # (ngitool-it-front on 127.0.0.1:18080, ngitool-it-b1..b3, compose projects
-                             # ngitool-it-app1/app2 in a temp dir), network ngitool-it
+NGITOOL_IT=1 go test ./...   # real Docker: discover (ngitool-it-scan, :18079); cli (ngitool-it-front on
+                             # 127.0.0.1:18080, ngitool-it-b1..b3, compose projects ngitool-it-app1/app2,
+                             # network ngitool-it; the edge stack ngitool-it-edge on :18080/:18443 with
+                             # network ngitool-it-edge and backend ngitool-it-edge-b1); migrate (nginx -t
+                             # of a migrated fixture with nginx:stable-alpine)
 ```
 
 ## Testing safely
@@ -567,7 +751,19 @@ $NGITOOL_PREFIX/bin/ngitool uninstall --purge --yes --force
 
 Interactive screens are checked in a private tmux server
 (`tmux -L <name> new-session -d -x 100 -y 30`, `send-keys`, `capture-pane -p -e`).
-The Node CLI's tests: `node cli/test/run.mjs` (its own EDGE_ROOT sandbox).
+
+The edge stack in a sandbox (never ports 80/443, never the networks `edge`
+or `proxy`):
+
+```bash
+ngitool edge init $S/edge --network ngitool-demo --email admin@example.com --no-token \
+  --http-port 18080 --https-port 18443 --project-name ngitool-demo --start --yes
+# … then: docker compose -p ngitool-demo --project-directory $S/edge down; docker network rm ngitool-demo
+```
+
+A migration is tried only on a copy: `cp -a <dir> $S/copy && ngitool migrate
+edge $S/copy --dry-run`, then delete the copy (it holds private keys and the
+token).
 
 ## Toolchain
 
@@ -740,6 +936,49 @@ Decisions made while building prompt 4:
   one) always tries `docker network rm` at the end; it fails harmlessly
   while anything still uses the network.
 
+Decisions made while building prompt 5:
+
+- **Default edge stack directory: `/opt/ngitool/edge`** (open decision, the
+  recommended choice): /root is private, and /opt is the conventional place
+  for a self-contained stack. `edge init [dir]` takes any other.
+- **Migration keeps the directory in place** (open decision, the
+  recommended choice): the running containers bind-mount it, and moving it
+  would mean downtime. The instance's root stays `<dir>/conf`.
+- **Size budget raised from 13.5 MB to 14.5 MB.** prompt 5 grew
+  `dist/ngitool` from 13,058,208 to **14,196,896 bytes** (+1.14 MB): the
+  new CLI commands ~195 KB, migrate ~84 KB, model ~57 KB, edge (with the
+  embedded assets) ~33 KB, certs ~20 KB, certificate generation and
+  x509 creation (RSA/ECDSA key generation, CreateCertificate/Request)
+  ~150 KB, the rest type metadata and strings. Nothing of that size could go
+  without dropping a required feature; ~300 KB remain.
+- The legacy templates are embedded but not written into a new stack:
+  NgiTool renders its own files, and the migration needs the templates only
+  to recognise hand edits.
+- `rm --app` plans with `model.PlanRemoval`, which follows the same rules as
+  `app unlink` (only the app's members leave shared pools), and also offers
+  `docker compose down` of the app as an extra.
+- `route add` with `--issue` issues before the transaction (nginx -t needs
+  the files) and deletes the new certificate again when the transaction
+  fails or is a dry run.
+- In a migration, a host that another instance (or a hand-written server)
+  already serves is a warning, not a blocker: it is true before the
+  migration too. Dry runs of a *copy* of a running stack show exactly that
+  for every host.
+- `ngitool --version` prints `ngitool vX.Y.Z` (cobra's version flag), next
+  to `ngitool version [--json]`.
+- Local builds (`make build`, `make release-local`) default to
+  `VERSION=v1.0.0`, the next tag; a plain `go build` still reports `dev`.
+
+## Next steps
+
+After v1.0.0, in rough order: TCP/UDP `stream` proxying (reported today,
+RP-14/CONF-12); rate limiting (`limit_req`/`limit_conn` per route);
+response caching (`proxy_cache` per route); a WAF hook (ModSecurity or
+Coraza) — none started. Releases: sign `checksums.txt` (cosign keyless or
+minisign, see Decisions) and publish `.deb` packages through GoReleaser
+nfpms. Smaller: `real_ip_header` for instances other than the edge stack
+(RP-12), a `troubleshoot` view for Cloudflare errors (RP-21).
+
 ## Prompts
 
 | # | Branch | What | Status |
@@ -748,4 +987,4 @@ Decisions made while building prompt 4:
 | 2 | `prompt-2-nginx-discovery` | nginxconf parser + dump splitter + includes + summary; discover (host, docker, compose-defined, edge, ports, capabilities, reachability, findings); drivers; `scan`, `instances`, `inspect`, doctor checks, Instances menu | done 2026-10-01 (unmerged, unpushed) |
 | 3 | `prompt-3-proxy-balancer` | model, render (3 layouts, resolve vs fallback), apply transaction (snapshot, drift, test, reload, probe, rollback), instance adopt/release, route/pool commands + wizard, Routes/Load balancing/Apply menu groups | done 2026-10-01 (unmerged, unpushed) |
 | 4 | `prompt-4-compose-apps` | compose finder (every pattern, labels, owners), app model (state schema 3), override writer + attach, lifecycle actions with explain/Will run/streamed output/summary, drift + `app fix`, `instance externalize`, Linked apps member source, Apps menu group, doctor apps check | done 2026-10-01 (unmerged, unpushed) |
-| 5 | `prompt-5-edge-migration` | edge stack, certificates, migrate edge.json, delete `cli/` (EDGE, CERT, MIG) | planned |
+| 5 | `prompt-5-edge-migration` | edge stack (embedded assets, `edge` commands), certificates (Let's Encrypt via certbot with HTTP-01 preflight or DNS-01, Origin CA, custom, self-signed, AOP), Cloudflare (DNS step, cf-sync), static routes, removal cascades (`rm`, `reset`, `www`, `domain`), `migrate edge` with a proving dry run, legacy CLI deleted, README/CHANGELOG/migration runbook (EDGE, CERT, MIG) | done 2026-10-01 (unmerged, unpushed) |

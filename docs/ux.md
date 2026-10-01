@@ -179,3 +179,26 @@ is a Plan block plus a Tree.
 - **Network chip** of an app: `OK` ✔ ok · `Err` ✖ detached / missing ·
   `Warn` ○ stopped · `Muted` ○ not attached. A detached app always gets the
   one-line why and `→ fix: ngitool app fix <app>`.
+
+## 12. Edge stack, certificates, migration
+
+- **Days left** (`ui.DaysLeft`): `Err` under 14 days or expired ("expired
+  2d ago"), `Warn` under 30, `OK` otherwise; over two years it reads "15
+  years left". A certificate whose file is missing shows `✖` and the reason
+  instead.
+- **Access logs** (`edge logs`): the status code alone is coloured — 5xx
+  `Err`, 4xx `Warn`, 3xx `Accent`, 2xx `OK`; with a host only its lines.
+- **Secrets**: the Cloudflare token is asked with a masked input, verified
+  before it is kept, and never echoed, logged or put in JSON output; off a
+  terminal it comes from `--token-file` or `$CLOUDFLARE_API_TOKEN`.
+- **Kinds that cannot be used** stay in the certificate select, disabled
+  with the reason (no token, not a Cloudflare zone, DNS-only host, no
+  certbot on the host), so the user learns what would enable them.
+- **Removal** shows the cascade as a Plan block, then an Explain panel when
+  more than the target goes; what becomes unused is a checklist with
+  certificates pre-ticked, and what stays is named afterwards with the
+  command that deletes it.
+- **Migration** prints the mapping as one table (KIND, NGINX-EDGE, NGITOOL,
+  NOTE), the dry run as a Plan block, each difference as where / now / then
+  / why, warnings, blockers with their fix, and ends with exactly one line:
+  `✔ safe to migrate` or `✖ N blockers`.
