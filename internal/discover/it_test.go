@@ -33,15 +33,19 @@ func TestIntegrationScan(t *testing.T) {
 		t.Fatal(err)
 	}
 	_ = exec.Command("docker", "rm", "-f", name).Run()
-	if exec.Command("docker", "network", "inspect", network).Run() != nil {
-		docker("network", "create", network)
-	}
+	// The cli integration test shares the network and may run at the same
+	// time: create it unless it exists, and remove it only when it is ours
+	// (docker refuses while the other test's containers are attached).
+	created := exec.Command("docker", "network", "inspect", network).Run() != nil &&
+		exec.Command("docker", "network", "create", network).Run() == nil
 	t.Cleanup(func() {
 		_ = exec.Command("docker", "rm", "-f", name).Run()
-		_ = exec.Command("docker", "network", "rm", network).Run()
+		if created {
+			_ = exec.Command("docker", "network", "rm", network).Run()
+		}
 	})
 	docker("run", "-d", "--name", name, "--network", network, "--pull", "never",
-		"-p", "127.0.0.1:18080:80", "-v", conf+":/etc/nginx/conf.d:ro", "nginx:stable-alpine")
+		"-p", "127.0.0.1:18079:80", "-v", conf+":/etc/nginx/conf.d:ro", "nginx:stable-alpine")
 	for i := 0; i < 50 && docker("inspect", "-f", "{{.State.Running}}", name) != "true"; i++ {
 		time.Sleep(100 * time.Millisecond)
 	}
