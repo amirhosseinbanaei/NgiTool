@@ -162,7 +162,11 @@ func runArgs(root *cobra.Command, args []string) error {
 		if f.Name == "yes" || f.Name == "force" || f.Name == "no-color" {
 			return // global flags keep what was given on the command line
 		}
-		_ = f.Value.Set(f.DefValue)
+		if sv, ok := f.Value.(pflag.SliceValue); ok {
+			_ = sv.Replace(nil) // Set("[]") would append a literal "[]"
+		} else {
+			_ = f.Value.Set(f.DefValue)
+		}
 		f.Changed = false
 	})
 	if err := cmd.ParseFlags(rest); err != nil {
