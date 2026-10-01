@@ -264,6 +264,7 @@ type InputOpts struct {
 	Default     string // used when the answer is left empty
 	Validate    func(string) error
 	Secret      bool
+	Suggestions []string // completed with tab as the prefix matches
 }
 
 // Input asks for text, validating as it is typed.
@@ -290,6 +291,9 @@ func Input(o InputOpts) (string, error) {
 	if o.Secret {
 		field.EchoMode(huh.EchoModePassword)
 	}
+	if len(o.Suggestions) > 0 {
+		field.Suggestions(o.Suggestions)
+	}
 	final := func() string {
 		v := strings.TrimSpace(value)
 		if v == "" {
@@ -303,7 +307,11 @@ func Input(o InputOpts) (string, error) {
 		}
 		return answered(o.Title, final())
 	}
-	if err := runField(field, nil, summary, func() string { return Muted("↵ confirm · esc back") }, nil); err != nil {
+	footer := "↵ confirm · esc back"
+	if len(o.Suggestions) > 0 {
+		footer = "tab complete · ↵ confirm · esc back"
+	}
+	if err := runField(field, nil, summary, func() string { return Muted(footer) }, nil); err != nil {
 		return "", err
 	}
 	return final(), nil
@@ -393,7 +401,8 @@ func huhOptions(opts []Option) []huh.Option[string] {
 				text += "  " + Muted(o.Hint)
 			}
 		}
-		out[i] = huh.NewOption(strings.TrimRight(text, " "), o.Value)
+		// One row per option: the hint is cut, never wrapped (rule 3).
+		out[i] = huh.NewOption(Truncate(strings.TrimRight(text, " "), max(20, min(Columns(), 100)-10)), o.Value)
 	}
 	return out
 }
