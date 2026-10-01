@@ -8,8 +8,10 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/amirhosseinbanaei/NgiTool/internal/compose"
 	"github.com/amirhosseinbanaei/NgiTool/internal/discover"
 	"github.com/amirhosseinbanaei/NgiTool/internal/nginxconf"
+	"github.com/amirhosseinbanaei/NgiTool/internal/paths"
 )
 
 func scan() *discover.Report {
@@ -283,6 +285,15 @@ func TestMemberSpecs(t *testing.T) {
 	if got := strings.Join(m.Params(), " "); got != "weight=2 max_fails=3 fail_timeout=10s max_conns=5 backup" {
 		t.Errorf("params: %s", got)
 	}
+	// A service of a linked app: the CLI completes Ref with the project.
+	if m, _, err := ParseMember("app:shop/web:3000"); err != nil || m.Kind != KindService || m.App != "shop" || m.Ref != "/web" || m.Port != 3000 {
+		t.Errorf("app member: %+v %v", m, err)
+	}
+	for _, bad := range []string{"app:shop", "app:/web", "app:shop/a/b"} {
+		if _, _, err := ParseMember(bad); err == nil {
+			t.Errorf("%s accepted", bad)
+		}
+	}
 	if _, s, _ := ParseMember("grpcs://g.example.net:50051"); s != "grpcs" {
 		t.Errorf("scheme: %s", s)
 	}
@@ -362,5 +373,31 @@ func TestUnixSocketMembers(t *testing.T) {
 	_ = os.WriteFile(plain, nil, 0o666)
 	if ps := checkMember(rep, host, Member{Kind: KindUnix, Ref: plain}); !has(ps, "RP-16", true) {
 		t.Errorf("not a socket: %+v", ps)
+	}
+}
+
+func TestStateSchema2GetsApps(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("NGITOOL_ROOT", dir)
+	p := paths.Get()
+	if err := os.MkdirAll(p.Lib, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p.State, []byte(`{"schema":2,"instances":[],"pools":[],"routes":[]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	st, err := Load(p)
+	if err != nil || st.Schema != 3 || st.Apps == nil {
+		t.Fatalf("2 → 3: %+v %v", st, err)
+	}
+	st.Apps = append(st.Apps, compose.App{Name: "shop", Attached: map[string]compose.Attach{"web": {Network: "edge", Keys: []string{"default"}}}})
+	c := st.Clone()
+	c.Apps[0].Attached["web"] = compose.Attach{Network: "other"}
+	if st.Apps[0].Attached["web"].Network != "edge" {
+		t.Error("Clone shares the apps' maps")
+	}
+	m := Member{Kind: KindService, Ref: "shop/web"}
+	if !m.OfApp(compose.App{Name: "x", Project: "shop"}, "web") || m.OfApp(compose.App{Name: "x", Project: "shop"}, "db") {
+		t.Error("OfApp")
 	}
 }

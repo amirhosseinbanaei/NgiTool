@@ -1,6 +1,7 @@
 package model
 
 import (
+	"github.com/amirhosseinbanaei/NgiTool/internal/compose"
 	"github.com/amirhosseinbanaei/NgiTool/internal/paths"
 	"github.com/amirhosseinbanaei/NgiTool/internal/state"
 )
@@ -25,6 +26,9 @@ func Save(p paths.Paths, st *State) error {
 	}
 	if st.Routes == nil {
 		st.Routes = []Route{}
+	}
+	if st.Apps == nil {
+		st.Apps = []compose.App{}
 	}
 	return state.StateStore(p).Save(st)
 }

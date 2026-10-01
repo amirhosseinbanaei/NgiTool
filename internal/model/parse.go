@@ -262,6 +262,7 @@ func ApplySticky(p *Pool, preset string) error {
 //
 //	container:NAME[:PORT]        a container, by name
 //	service:PROJECT/SERVICE[:PORT]  a compose service
+//	app:APP/SERVICE[:PORT]       a service of a linked app
 //	port:PORT  (or host:PORT)    a process on this host
 //	unix:/path/to.sock           a unix socket
 //	HOST:PORT, addr:HOST:PORT, http(s)://HOST[:PORT], grpc(s)://…  an address
@@ -292,6 +293,18 @@ func ParseMember(spec string) (Member, string, error) {
 			return m, "", fmt.Errorf("service members are PROJECT/SERVICE[:PORT], e.g. service:shop/web:3000")
 		}
 		m.Ref, m.Port = name, port
+	case "app":
+		// A service of a linked app; the CLI fills Ref and Host from state.
+		m.Kind = KindService
+		name, port, err := namePort(rest)
+		if err != nil {
+			return m, "", err
+		}
+		app, svc, ok := strings.Cut(name, "/")
+		if !ok || app == "" || svc == "" || strings.Contains(svc, "/") {
+			return m, "", fmt.Errorf("app members are APP/SERVICE[:PORT], e.g. app:shop/web:3000")
+		}
+		m.App, m.Ref, m.Port = app, "/"+svc, port
 	case "port", "host":
 		m.Kind = KindHostPort
 		p, err := ParsePort(rest)

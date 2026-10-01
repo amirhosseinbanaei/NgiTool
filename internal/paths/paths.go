@@ -5,6 +5,7 @@
 //	/var/lib/ngitool/.lock          held by every mutating command
 //	/var/lib/ngitool/backups/       snapshots taken before every apply
 //	/var/lib/ngitool/overrides/     compose overrides
+//	/var/lib/ngitool/externalized/  nginx configs copied out of images
 //	/var/cache/ngitool/             update-check and scan caches
 //
 // NGITOOL_ROOT=/some/dir moves all of it under that dir (etc/, lib/, cache/)
@@ -31,6 +32,7 @@ type Paths struct {
 	Lock        string
 	Backups     string
 	Overrides   string
+	Externals   string // nginx configs copied out of images (CONF-06)
 	Cache       string
 	UpdateCheck string
 	ScanCache   string
@@ -55,6 +57,7 @@ func Get() Paths {
 		Lock:        filepath.Join(lib, ".lock"),
 		Backups:     filepath.Join(lib, "backups"),
 		Overrides:   filepath.Join(lib, "overrides"),
+		Externals:   filepath.Join(lib, "externalized"),
 		Cache:       cache,
 		UpdateCheck: filepath.Join(cache, "update-check.json"),
 		ScanCache:   filepath.Join(cache, "scan.json"),

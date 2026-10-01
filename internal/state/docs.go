@@ -6,7 +6,7 @@ import "github.com/amirhosseinbanaei/NgiTool/internal/paths"
 // number whenever a document's shape changes (edge case SYS-07).
 const (
 	ConfigSchema = 1
-	StateSchema  = 2
+	StateSchema  = 3
 )
 
 // Config is /etc/ngitool/config.json.
@@ -48,6 +48,13 @@ var (
 				if _, ok := doc[k]; !ok {
 					doc[k] = []any{}
 				}
+			}
+			return nil
+		},
+		// 2 → 3 (prompt 4): linked compose apps appear, empty.
+		2: func(doc map[string]any) error {
+			if _, ok := doc["apps"]; !ok {
+				doc["apps"] = []any{}
 			}
 			return nil
 		},

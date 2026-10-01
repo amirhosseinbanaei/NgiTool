@@ -221,7 +221,7 @@ func checkMember(rep *discover.Report, in *discover.Instance, m Member) Problems
 				net := joinNetwork(in)
 				ps = append(ps, Problem{Code: "RP-05", Level: LevelWarn,
 					Msg:     c.Name + " is not on a network " + in.Name + " shares (it is on " + orNone(c.Networks) + ")",
-					Fix:     "connect it: docker network connect " + net + " " + c.Name + " — lasts until the container is recreated (prompt 4 makes it permanent)",
+					Fix:     "connect it: docker network connect " + net + " " + c.Name + " — lasts until the container is recreated; for a linked app: ngitool app attach (permanent)",
 					Connect: &Connect{Container: c.Name, Network: net}})
 			}
 		}
@@ -391,6 +391,9 @@ func ResolveMember(rep *discover.Report, in *discover.Instance, m *Member) {
 			m.Host = m.Ref
 		}
 	case KindService:
+		if m.App != "" && m.Host != "" {
+			return // the alias the app's override gives it (DOCK-16)
+		}
 		cs := memberContainers(rep, *m)
 		_, svc, _ := strings.Cut(m.Ref, "/")
 		for _, c := range cs {

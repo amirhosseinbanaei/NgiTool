@@ -14,6 +14,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/amirhosseinbanaei/NgiTool/internal/compose"
 )
 
 // Member kinds.
@@ -64,7 +66,10 @@ type Member struct {
 	Ref string `json:"ref,omitempty"`
 	// Host is the DNS name nginx uses for containers and services: a
 	// container name or alias that resolves on a shared network. Never an IP.
-	Host        string `json:"host,omitempty"`
+	Host string `json:"host,omitempty"`
+	// App is the linked app a compose-service member belongs to; Ref is
+	// then "<project>/<service>" and Host the alias the override gives it.
+	App         string `json:"app,omitempty"`
 	Port        int    `json:"port,omitempty"`
 	Weight      int    `json:"weight,omitempty"`
 	Backup      bool   `json:"backup,omitempty"`
@@ -295,10 +300,75 @@ type Adopted struct {
 
 // State is state.json.
 type State struct {
-	Schema    int       `json:"schema"`
-	Instances []Adopted `json:"instances"`
-	Pools     []Pool    `json:"pools"`
-	Routes    []Route   `json:"routes"`
+	Schema    int           `json:"schema"`
+	Instances []Adopted     `json:"instances"`
+	Pools     []Pool        `json:"pools"`
+	Routes    []Route       `json:"routes"`
+	Apps      []compose.App `json:"apps"`
+}
+
+// App returns the linked app named name, or nil.
+func (s *State) App(name string) *compose.App {
+	for i := range s.Apps {
+		if s.Apps[i].Name == name {
+			return &s.Apps[i]
+		}
+	}
+	return nil
+}
+
+// AppOfProject returns the app linked to a compose project, or nil.
+func (s *State) AppOfProject(project string) *compose.App {
+	for i := range s.Apps {
+		if s.Apps[i].Project == project {
+			return &s.Apps[i]
+		}
+	}
+	return nil
+}
+
+// RemoveApp drops an app by name.
+func (s *State) RemoveApp(name string) {
+	out := s.Apps[:0]
+	for _, a := range s.Apps {
+		if a.Name != name {
+			out = append(out, a)
+		}
+	}
+	s.Apps = out
+}
+
+// RoutesToApp are the ids of routes whose pool has a member of app
+// (service "" = any service), sorted.
+func (s *State) RoutesToApp(a compose.App, service string) []string {
+	var ids []string
+	for _, r := range s.Routes {
+		p := s.Pool(r.Pool)
+		if p == nil {
+			continue
+		}
+		for _, m := range p.Members {
+			if m.OfApp(a, service) {
+				ids = append(ids, r.ID)
+				break
+			}
+		}
+	}
+	sort.Strings(ids)
+	return ids
+}
+
+// OfApp reports whether the member is a service of app (any service when
+// service is "").
+func (m Member) OfApp(a compose.App, service string) bool {
+	if m.Kind != KindService {
+		return false
+	}
+	proj, svc, _ := strings.Cut(m.Ref, "/")
+	if m.App != a.Name && proj != a.Project {
+		return false
+	}
+	return service == "" || svc == service
 }
 
 // Adopted returns the adopted instance id, or nil.
@@ -371,6 +441,31 @@ func (s *State) PoolsOn(instance string) []Pool {
 func (s *State) Clone() *State {
 	c := &State{Schema: s.Schema}
 	c.Instances = append([]Adopted{}, s.Instances...)
+	for _, a := range s.Apps {
+		a.Files = append([]string(nil), a.Files...)
+		a.Profiles = append([]string(nil), a.Profiles...)
+		a.EnvFiles = append([]string(nil), a.EnvFiles...)
+		if a.Attached != nil {
+			m := map[string]compose.Attach{}
+			for k, v := range a.Attached {
+				v.Keys = append([]string(nil), v.Keys...)
+				m[k] = v
+			}
+			a.Attached = m
+		}
+		if a.Mounts != nil {
+			m := map[string][]compose.Mount{}
+			for k, v := range a.Mounts {
+				m[k] = append([]compose.Mount(nil), v...)
+			}
+			a.Mounts = m
+		}
+		if a.Last != nil {
+			l := *a.Last
+			a.Last = &l
+		}
+		c.Apps = append(c.Apps, a)
+	}
 	for i := range c.Instances {
 		if inc := c.Instances[i].Include; inc != nil {
 			cp := *inc
