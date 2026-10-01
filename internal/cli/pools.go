@@ -309,11 +309,11 @@ func poolAddCmd(e *env) *cobra.Command {
 				if err := ui.Need("targets", "--to TARGET"); err != nil {
 					return err
 				}
-				if to, err = pickMembers(rep, in, nil); err != nil {
+				if to, err = pickMembers(st, rep, in, nil); err != nil {
 					return err
 				}
 			}
-			if err := membersFromSpecs(rep, in, to, &p); err != nil {
+			if err := membersFromSpecs(st, rep, in, to, &p); err != nil {
 				return err
 			}
 			switch {
@@ -439,13 +439,13 @@ func memberAddCmd(e *env) *cobra.Command {
 				if err := ui.Need("targets", "TARGET…"); err != nil {
 					return err
 				}
-				if specs, err = pickMembers(rep, in, nil); err != nil {
+				if specs, err = pickMembers(st, rep, in, nil); err != nil {
 					return err
 				}
 			}
 			draft := *p
 			draft.Members = append([]model.Member{}, p.Members...)
-			if err := membersFromSpecs(rep, in, specs, &draft); err != nil {
+			if err := membersFromSpecs(st, rep, in, specs, &draft); err != nil {
 				return err
 			}
 			if err := e.offerConnect(cmd.Context(), rep, in, &draft, connect); err != nil {
@@ -686,12 +686,12 @@ func switchCmd(e *env) *cobra.Command {
 				if err := ui.Need("the new members", "--to TARGET…"); err != nil {
 					return err
 				}
-				if to, err = pickMembers(rep, in, nil); err != nil {
+				if to, err = pickMembers(st, rep, in, nil); err != nil {
 					return err
 				}
 			}
 			draft := model.Pool{Name: name, Scheme: p.Scheme}
-			if err := membersFromSpecs(rep, in, to, &draft); err != nil {
+			if err := membersFromSpecs(st, rep, in, to, &draft); err != nil {
 				return err
 			}
 			if err := e.offerConnect(ctx, rep, in, &draft, false); err != nil {

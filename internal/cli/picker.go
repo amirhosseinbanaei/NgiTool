@@ -26,10 +26,11 @@ type pickRow struct {
 // apps" here; the picker does not care where rows come from.
 type memberSource struct {
 	Title string
-	Rows  func(rep *discover.Report, in *discover.Instance) []pickRow
+	Rows  func(st *model.State, rep *discover.Report, in *discover.Instance) []pickRow
 }
 
 var memberSources = []memberSource{
+	{Title: "Linked apps", Rows: appRows},
 	{Title: "Compose services", Rows: serviceRows},
 	{Title: "Containers", Rows: containerRows},
 	{Title: "Host ports", Rows: hostPortRows},
@@ -74,7 +75,7 @@ func hostNetBlocked(in *discover.Instance) string {
 	return ""
 }
 
-func serviceRows(rep *discover.Report, in *discover.Instance) []pickRow {
+func serviceRows(st *model.State, rep *discover.Report, in *discover.Instance) []pickRow {
 	type svc struct {
 		c     discover.Container
 		n     int
@@ -83,8 +84,8 @@ func serviceRows(rep *discover.Report, in *discover.Instance) []pickRow {
 	by := map[string]*svc{}
 	var keys []string
 	for _, c := range rep.Containers {
-		if !c.Running || c.Project == "" || c.Name == in.Container {
-			continue
+		if !c.Running || c.Project == "" || c.Name == in.Container || st.AppOfProject(c.Project) != nil {
+			continue // a linked app's services are listed under Linked apps
 		}
 		k := c.Project + "/" + c.Service
 		if by[k] == nil {
@@ -124,7 +125,7 @@ func serviceRows(rep *discover.Report, in *discover.Instance) []pickRow {
 	return rows
 }
 
-func containerRows(rep *discover.Report, in *discover.Instance) []pickRow {
+func containerRows(_ *model.State, rep *discover.Report, in *discover.Instance) []pickRow {
 	var rows []pickRow
 	for _, c := range rep.Containers {
 		if !c.Running || c.Project != "" || c.Name == in.Container {
@@ -146,7 +147,7 @@ func containerRows(rep *discover.Report, in *discover.Instance) []pickRow {
 	return rows
 }
 
-func hostPortRows(rep *discover.Report, in *discover.Instance) []pickRow {
+func hostPortRows(_ *model.State, rep *discover.Report, in *discover.Instance) []pickRow {
 	type port struct {
 		addrs []string
 		proc  string
@@ -204,11 +205,11 @@ func appendOnce(xs []string, x string) []string {
 
 // pickMembers is wizard step c+d: a checklist of every target, then the
 // port of each pick that exposes more than one.
-func pickMembers(rep *discover.Report, in *discover.Instance, preselected []string) ([]string, error) {
+func pickMembers(st *model.State, rep *discover.Report, in *discover.Instance, preselected []string) ([]string, error) {
 	var opts []ui.Option
 	rows := map[string]pickRow{}
 	for _, src := range memberSources {
-		rs := src.Rows(rep, in)
+		rs := src.Rows(st, rep, in)
 		if len(rs) == 0 {
 			continue
 		}
@@ -362,12 +363,17 @@ func askMethod(p *model.Pool) error {
 }
 
 // membersFromSpecs parses specs into members for an instance, filling
-// names (never IPs) and checking one scheme per pool (LB-16).
-func membersFromSpecs(rep *discover.Report, in *discover.Instance, specs []string, p *model.Pool) error {
+// names (never IPs) and checking one scheme per pool (LB-16). Services of
+// linked apps are recorded with their app and, once attached, the alias
+// the app's override gives them (DOCK-16).
+func membersFromSpecs(st *model.State, rep *discover.Report, in *discover.Instance, specs []string, p *model.Pool) error {
 	for _, s := range specs {
 		m, scheme, err := model.ParseMember(s)
 		if err != nil {
 			return codeErr(err)
+		}
+		if err := appMember(st, &m); err != nil {
+			return err
 		}
 		if scheme != "" {
 			if len(p.Members) > 0 && p.Scheme != scheme {

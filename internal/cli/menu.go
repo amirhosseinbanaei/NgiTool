@@ -26,6 +26,7 @@ type Group struct {
 var groups = []Group{
 	{ID: "routes", Title: "ROUTES", Label: "Routes", Note: "hosts and paths to containers, services and ports"},
 	{ID: "lb", Title: "LOAD BALANCING", Label: "Load balancing", Note: "pools, members, drain, blue/green, health"},
+	{ID: "apps", Title: "APPS", Label: "Apps", Note: "compose projects: link, start, rebuild, fix"},
 	{ID: "apply", Title: "APPLY", Label: "Apply & roll back", Note: "diff, apply, snapshots, nginx -t, reload"},
 	{ID: "instances", Title: "INSTANCES", Label: "Instances", Note: "every nginx on this server: scan, list, inspect, adopt"},
 	{ID: "server", Title: "SERVER", Label: "This server", Note: "check what this machine has"},
@@ -58,6 +59,10 @@ var menuItems = []MenuItem{
 	{Group: "lb", Label: "Set a weight", Hint: "more traffic to bigger members", Args: []string{"pool", "member", "weight"}},
 	{Group: "lb", Label: "Make a member a backup", Hint: "used only when the others fail", Args: []string{"pool", "member", "backup"}},
 	{Group: "lb", Label: "Remove a pool", Hint: "and the routes that use it", Args: []string{"pool", "rm"}},
+	{Group: "apps", Label: "Link", Hint: "pick compose projects from every one on this server", Args: []string{"app", "link"}},
+	{Group: "apps", Label: "Scan", Hint: "the same checklist, several at once", Args: []string{"app", "scan"}},
+	{Group: "apps", Label: "List", Hint: "state, network, routes of every linked app", Args: []string{"app", "ls"}},
+	{Group: "apps", Label: "Fix detached", Hint: "recreate apps started without NgiTool's override (DOCK-07)", Args: []string{"app", "fix"}},
 	{Group: "apply", Label: "Diff", Hint: "what apply would change, hand edits", Args: []string{"diff"}},
 	{Group: "apply", Label: "Apply", Hint: "re-render from state", Args: []string{"apply"}},
 	{Group: "apply", Label: "Roll back", Hint: "pick a snapshot", Args: []string{"rollback"}},
@@ -68,6 +73,7 @@ var menuItems = []MenuItem{
 	{Group: "instances", Label: "Inspect", Hint: "servers, locations and targets of one instance", Args: []string{"inspect"}},
 	{Group: "instances", Label: "Adopt", Hint: "let NgiTool write to an instance", Args: []string{"instance", "adopt"}},
 	{Group: "instances", Label: "Release", Hint: "remove every NgiTool file from an instance", Args: []string{"instance", "release"}},
+	{Group: "instances", Label: "Externalize", Hint: "copy a baked-in config out of the image so it can be adopted (CONF-06)", Args: []string{"instance", "externalize"}},
 	{Group: "server", Label: "Doctor", Hint: "root, docker, compose v2, ss, front door, configs, state dir, updates", Args: []string{"doctor"}},
 	{Group: "tool", Label: "Update", Hint: "install the latest release", Args: []string{"update"}},
 	{Group: "tool", Label: "Check for updates", Hint: "compare with the latest release", Args: []string{"update", "--check"}},
@@ -85,6 +91,23 @@ func itemsOf(group string) []MenuItem {
 		}
 	}
 	return out
+}
+
+// dynamicItems add entries computed when a group opens: one per linked
+// app in Apps, between Scan and List.
+var dynamicItems = map[string]func(e *env) []MenuItem{"apps": appMenuItems}
+
+// groupItems are a group's static items with its dynamic ones after the
+// first two.
+func groupItems(e *env, group string) []MenuItem {
+	items := itemsOf(group)
+	if f := dynamicItems[group]; f != nil {
+		if more := f(e); len(more) > 0 {
+			at := min(2, len(items))
+			items = append(append(append([]MenuItem{}, items[:at]...), more...), items[at:]...)
+		}
+	}
+	return items
 }
 
 // runMenu is `ngitool` on a terminal: banner, then groups, then actions.
@@ -126,7 +149,7 @@ func runGroup(e *env, id string) error {
 			g = gg
 		}
 	}
-	items := itemsOf(id)
+	items := groupItems(e, id)
 	opts := make([]ui.Option, len(items))
 	for i, it := range items {
 		opts[i] = ui.Option{Value: fmt.Sprint(i), Label: it.Label, Hint: it.Hint}

@@ -23,12 +23,12 @@ func instanceCmd(e *env) *cobra.Command {
 	c := &cobra.Command{
 		Use:         "instance",
 		Short:       "adopt an nginx so NgiTool may write to it, or release it",
-		Long:        "adopt   once per instance, before NgiTool writes there: creates its directories and the one include\nrelease removes every NgiTool file and the include line again",
-		Annotations: map[string]string{annGroup: "instances", annSynopsis: "instance adopt|release <id>"},
+		Long:        "adopt        once per instance, before NgiTool writes there: creates its directories and the one include\nrelease      removes every NgiTool file and the include line again\nexternalize  copies a config baked into a compose service's image out to the host and mounts it (CONF-06)",
+		Annotations: map[string]string{annGroup: "instances", annSynopsis: "instance adopt|release|externalize <id>"},
 		Args:        noArgs,
 		RunE:        func(cmd *cobra.Command, _ []string) error { return cmd.Help() },
 	}
-	c.AddCommand(adoptCmd(e), releaseCmd(e))
+	c.AddCommand(adoptCmd(e), releaseCmd(e), externalizeCmd(e))
 	return c
 }
 
@@ -103,10 +103,13 @@ func (e *env) adopt(cmd *cobra.Command, rep *discover.Report, st *model.State, i
 	if !in.Caps.Write.OK {
 		ui.Fail(in.Name + " cannot be written: " + in.Caps.Write.Reason)
 		if strings.Contains(in.Caps.Write.Reason, "CONF-06") {
-			ui.Hint("What it needs: the config on the host, mounted into the container. For example:")
-			ui.Hint("  docker cp " + firstNonEmpty(in.Container, in.Name) + ":/etc/nginx /srv/" + in.Name + "-nginx")
-			ui.Hint("  then mount it: volumes: [\"/srv/" + in.Name + "-nginx:/etc/nginx\"] and recreate the container")
-			ui.Hint("Prompt 4 writes that compose override for you (CONF-06).")
+			ui.Hint("What it needs: the config on the host, mounted into the container.")
+			if in.Kind == discover.KindCompose {
+				ui.Hint(ui.SymArrow + " NgiTool does it through the app's override: ngitool instance externalize " + in.ID)
+			} else {
+				ui.Hint("  docker cp " + firstNonEmpty(in.Container, in.Name) + ":/etc/nginx /srv/" + in.Name + "-nginx")
+				ui.Hint("  then mount it: -v /srv/" + in.Name + "-nginx:/etc/nginx and recreate the container")
+			}
 		}
 		return &ExitError{Code: ExitFail}
 	}

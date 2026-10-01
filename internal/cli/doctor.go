@@ -13,8 +13,10 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/amirhosseinbanaei/NgiTool/internal/compose"
 	"github.com/amirhosseinbanaei/NgiTool/internal/discover"
 	"github.com/amirhosseinbanaei/NgiTool/internal/execx"
+	"github.com/amirhosseinbanaei/NgiTool/internal/model"
 	"github.com/amirhosseinbanaei/NgiTool/internal/ui"
 	"github.com/amirhosseinbanaei/NgiTool/internal/update"
 	"github.com/amirhosseinbanaei/NgiTool/internal/version"
@@ -43,6 +45,7 @@ var checks = []Check{
 	{ID: "ss", Label: "ss (socket owners)", Run: checkSS},
 	{ID: "front-door", Label: "Front door", Run: checkFrontDoor},
 	{ID: "configs", Label: "nginx configs", Run: checkConfigs},
+	{ID: "apps", Label: "Linked apps", Run: checkApps},
 	{ID: "state", Label: "State directory", Run: checkStateDir},
 	{ID: "updates", Label: "Update source", Run: checkUpdates},
 }
@@ -59,7 +62,7 @@ func doctorCmd(e *env) *cobra.Command {
 	var asJSON bool
 	c := &cobra.Command{
 		Use:         "doctor",
-		Short:       "root, docker, compose, ss, front door, configs, state, updates",
+		Short:       "root, docker, compose, ss, front door, configs, apps, state, updates",
 		Long:        "Runs every check at once and prints ✔ ok, ! warning or ✖ failed, with a fix for each line that is not ok.\nExits 1 when a check failed.",
 		Annotations: map[string]string{annGroup: "server", annSynopsis: "doctor [--json]"},
 		Args:        noArgs,
@@ -322,4 +325,36 @@ func checkConfigs(ctx context.Context, e *env) CheckResult {
 		return CheckResult{ui.StatusOK, fmt.Sprintf("%d valid, %d not testable (%s)", tested, len(untested), strings.Join(untested, ", ")), ""}
 	}
 	return CheckResult{Status: ui.StatusOK, Detail: fmt.Sprintf("%d valid", tested)}
+}
+
+// checkApps is DOCK-07 and DOCK-10: a linked app started without its
+// override, or whose files are gone.
+func checkApps(ctx context.Context, e *env) CheckResult {
+	st, err := model.Load(e.paths)
+	if err != nil {
+		return CheckResult{ui.StatusFail, err.Error(), "fix or move " + e.paths.State}
+	}
+	if len(st.Apps) == 0 {
+		return CheckResult{Status: ui.StatusOK, Detail: "none linked"}
+	}
+	ctrs, err := appContainers(ctx)
+	if err != nil {
+		return CheckResult{ui.StatusWarn, fmt.Sprintf("%d linked; container state unknown: %s", len(st.Apps), firstLine(err.Error())), "check the Docker lines above"}
+	}
+	var detached, missing []string
+	for _, a := range st.Apps {
+		switch compose.Check(a, ctrs).Status {
+		case compose.NetDetached:
+			detached = append(detached, a.Name)
+		case compose.NetMissing:
+			missing = append(missing, a.Name)
+		}
+	}
+	switch {
+	case len(detached) > 0:
+		return CheckResult{ui.StatusFail, strings.Join(detached, ", ") + " " + compose.DetachedWhy + " (DOCK-07)", "ngitool app fix " + detached[0]}
+	case len(missing) > 0:
+		return CheckResult{ui.StatusWarn, strings.Join(missing, ", ") + ": compose files are gone (DOCK-10)", "ngitool app show " + missing[0]}
+	}
+	return CheckResult{Status: ui.StatusOK, Detail: fmt.Sprintf("%d linked, none detached", len(st.Apps))}
 }

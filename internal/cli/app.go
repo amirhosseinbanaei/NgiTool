@@ -13,6 +13,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/amirhosseinbanaei/NgiTool/internal/compose"
 	"github.com/amirhosseinbanaei/NgiTool/internal/discover"
 	"github.com/amirhosseinbanaei/NgiTool/internal/paths"
 	"github.com/amirhosseinbanaei/NgiTool/internal/ui"
@@ -36,6 +37,7 @@ type env struct {
 	root    *cobra.Command
 	memo    scanMemo         // one scan shared by everything in this run
 	fixed   *discover.Report // tests: every scan returns this
+	bin     *compose.Bin     // docker compose, found once per run
 }
 
 // ExitError ends the run with Code; Msg is printed unless empty.
@@ -67,10 +69,14 @@ func Main(args []string) int {
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, os.Interrupt)
 	go func() {
-		<-sig
-		ui.RestoreTerminal()
-		fmt.Fprintln(os.Stderr, ui.Muted("Interrupted."))
-		os.Exit(ExitInterrupted)
+		for range sig {
+			if holdInterrupt.Load() {
+				continue // `app logs` follows: Ctrl-C stops the child and the menu comes back
+			}
+			ui.RestoreTerminal()
+			fmt.Fprintln(os.Stderr, ui.Muted("Interrupted."))
+			os.Exit(ExitInterrupted)
+		}
 	}()
 
 	e := &env{paths: paths.Get()}
@@ -131,6 +137,7 @@ var commands = []func(*env) *cobra.Command{
 	instanceCmd,
 	routeCmd,
 	poolCmd,
+	appCmd,
 	diffCmd,
 	applyCmd,
 	rollbackCmd,

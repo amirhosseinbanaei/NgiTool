@@ -365,7 +365,7 @@ func (e *env) wizardTargets(cmd *cobra.Command, o *routeOpts, rep *discover.Repo
 				pre = append(pre, specOf(m))
 			}
 			var err error
-			if specs, err = pickMembers(rep, in, pre); err != nil {
+			if specs, err = pickMembers(st, rep, in, pre); err != nil {
 				return err
 			}
 		}
@@ -381,7 +381,7 @@ func (e *env) wizardTargets(cmd *cobra.Command, o *routeOpts, rep *discover.Repo
 		} else if !edit {
 			d.pool.Scheme = ""
 		}
-		if err := membersFromSpecs(rep, in, specs, &d.pool); err != nil {
+		if err := membersFromSpecs(st, rep, in, specs, &d.pool); err != nil {
 			return err
 		}
 		for i, m := range d.pool.Members {
@@ -440,6 +440,10 @@ func specOf(m model.Member) string {
 	case model.KindContainer:
 		return "container:" + m.Ref + ":" + strconv.Itoa(m.Port)
 	case model.KindService:
+		if m.App != "" {
+			_, svc, _ := strings.Cut(m.Ref, "/")
+			return "app:" + m.App + "/" + svc + ":" + strconv.Itoa(m.Port)
+		}
 		return "service:" + m.Ref + ":" + strconv.Itoa(m.Port)
 	case model.KindHostPort:
 		return "port:" + strconv.Itoa(m.Port)
@@ -670,23 +674,41 @@ func wizardOptions(cmd *cobra.Command, o *routeOpts, d *draft) error {
 }
 
 // offerConnect is RP-05: a container that shares no network with the
-// instance can be connected now, as cli/src/flows.mjs did. It lasts until
-// the container is recreated; prompt 4 makes it permanent.
+// instance joins it. A service of a linked app joins through the app's
+// override (permanent, survives recreates — cli/src/flows.mjs
+// attachService); anything else can be connected now with docker network
+// connect, which lasts until the container is recreated.
 func (e *env) offerConnect(ctx context.Context, rep *discover.Report, in *discover.Instance, p *model.Pool, yes bool) error {
 	tmp := &model.State{Pools: []model.Pool{*p}}
 	tmp.Pools[0].Instance = in.ID
 	if tmp.Pools[0].Name == "" {
 		tmp.Pools[0].Name = "draft"
 	}
+	st, err := model.Load(e.paths)
+	if err != nil {
+		return err
+	}
+	done := map[string]bool{}
 	for _, pr := range model.CheckPool(tmp, rep, &tmp.Pools[0]) {
 		if pr.Connect == nil {
+			continue
+		}
+		if c := rep.Container(pr.Connect.Container); c != nil && c.Project != "" && st.AppOfProject(c.Project) != nil {
+			key := c.Project + "/" + c.Service
+			if done[key] {
+				continue // another replica of the same service
+			}
+			done[key] = true
+			if err := e.attachMember(ctx, rep, st.AppOfProject(c.Project).Name, c.Project, c.Service, pr.Connect.Network, p, yes); err != nil {
+				return err
+			}
 			continue
 		}
 		join := yes
 		if !join && ui.CanPrompt() {
 			var err error
 			if join, err = ui.Confirm("Connect "+pr.Connect.Container+" to the "+pr.Connect.Network+" network now?",
-				"lasts until the container is recreated — prompt 4 makes it permanent (RP-05)", true); err != nil {
+				"lasts until the container is recreated — link its project (ngitool app link) to make it permanent (RP-05)", true); err != nil {
 				return err
 			}
 		}
@@ -706,6 +728,38 @@ func (e *env) offerConnect(ctx context.Context, rep *discover.Report, in *discov
 		}
 		if c := rep.Container(pr.Connect.Container); c != nil {
 			c.Networks = append(c.Networks, pr.Connect.Network)
+		}
+	}
+	return nil
+}
+
+// attachMember joins an app's service to the instance's network through
+// the override, then points the pool's members of it at the alias.
+func (e *env) attachMember(ctx context.Context, rep *discover.Report, app, project, service, network string, p *model.Pool, yes bool) error {
+	how, now := "", -1
+	if !ui.CanPrompt() {
+		if !yes {
+			ui.Warning(project + "/" + service + " is not on " + network + " — nginx cannot reach it until it is " + ui.Muted("(RP-05)"))
+			ui.Hint(ui.SymArrow + " pass --connect to attach it through the app's override, or: ngitool app attach " + app + " " + service)
+			return nil
+		}
+		how, now = "override", 1
+	}
+	at, recreated, err := e.attachService(ctx, app, service, network, how, now, false)
+	if err != nil {
+		return err
+	}
+	for i := range p.Members {
+		m := &p.Members[i]
+		if m.Kind == model.KindService && m.Ref == project+"/"+service {
+			m.App, m.Host = app, at.Alias
+		}
+	}
+	if recreated {
+		for i := range rep.Containers {
+			if c := &rep.Containers[i]; c.Project == project && c.Service == service {
+				c.Networks = appendOnce(c.Networks, network)
+			}
 		}
 	}
 	return nil
@@ -854,6 +908,18 @@ func routeLsCmd(e *env) *cobra.Command {
 			}
 			ui.Plain("")
 			ui.Plain("  " + ui.Muted(ui.OK(ui.SymDot)+" reached its upstream  "+ui.Err(ui.SymErr)+" 502/503/504  "+ui.SymRing+" not probed yet"))
+			if len(st.Apps) > 0 {
+				// DOCK-07: an app behind these routes started without its override.
+				if ctrs, err := appContainers(cmd.Context()); err == nil {
+					var views []appJSON
+					for _, a := range st.Apps {
+						if v := appView(st, a, ctrs); len(v.Routes) > 0 {
+							views = append(views, v)
+						}
+					}
+					warnDetached(views)
+				}
+			}
 			return nil
 		},
 	}

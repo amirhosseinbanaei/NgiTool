@@ -117,8 +117,8 @@ func TestInstancesGroupInMenuAndHelp(t *testing.T) {
 			g = &groups[i]
 		}
 	}
-	if g == nil || len(itemsOf("instances")) != 5 {
-		t.Fatal("Instances menu group with scan, list, inspect, adopt, release")
+	if g == nil || len(itemsOf("instances")) != 6 {
+		t.Fatal("Instances menu group with scan, list, inspect, adopt, release, externalize")
 	}
 	e, _ := sandbox(t)
 	help := renderHelp(newRoot(e))
