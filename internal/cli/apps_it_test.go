@@ -72,8 +72,12 @@ func TestIntegrationComposeApps(t *testing.T) {
 		_ = exec.Command("docker", "image", "rm", "-f", itApp2+"-web:it").Run()
 	}
 	cleanup()
+	// The discover test may create the shared network between the inspect
+	// and the create (packages run in parallel): "already exists" is fine.
 	if exec.Command("docker", "network", "inspect", network).Run() != nil {
-		docker("network", "create", network)
+		if out, err := exec.Command("docker", "network", "create", network).CombinedOutput(); err != nil && !strings.Contains(string(out), "already exists") {
+			t.Fatalf("docker network create %s: %v\n%s", network, err, out)
+		}
 	}
 	t.Cleanup(func() {
 		cleanup()
