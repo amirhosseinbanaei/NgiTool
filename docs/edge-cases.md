@@ -93,6 +93,7 @@ use `example.com` and made-up project names only.
 | RP-22 | Disable vs remove a route. | Command used. | Disable keeps the route in state and removes it from nginx; enable restores it. | cli TestRouteLifecycle | done (prompt 3) |
 | RP-23 | Trailing-slash semantics of `proxy_pass` with a URI part. | Route strip/keep choice. | Generates the exact slash combination for the chosen behaviour instead of letting users hand-edit it. | render golden path-strip-and-keep | done (prompt 3) |
 | RP-24 | Upstream serves by virtual host and needs a specific Host header. | On request. | Per-route Host override (`proxy_set_header Host`). | render golden https-upstream (`--host-header`) | done (prompt 3) |
+| RP-25 | A compose service name shared by other containers on the same network (every project's `web` on an external `edge` network). | DNS names of every running container on the instance's networks. | Uses the service name or `<project>-<service>` only when it resolves to that service alone, else the container name; a stored member whose name others share is refused. | model TestServiceNameSharedAcrossProjects, TestContainerMembers | done (fix) |
 
 ## LB — load balancing
 
