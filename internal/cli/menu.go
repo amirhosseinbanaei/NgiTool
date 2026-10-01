@@ -24,7 +24,10 @@ type Group struct {
 }
 
 var groups = []Group{
-	{ID: "instances", Title: "INSTANCES", Label: "Instances", Note: "every nginx on this server: scan, list, inspect"},
+	{ID: "routes", Title: "ROUTES", Label: "Routes", Note: "hosts and paths to containers, services and ports"},
+	{ID: "lb", Title: "LOAD BALANCING", Label: "Load balancing", Note: "pools, members, drain, blue/green, health"},
+	{ID: "apply", Title: "APPLY", Label: "Apply & roll back", Note: "diff, apply, snapshots, nginx -t, reload"},
+	{ID: "instances", Title: "INSTANCES", Label: "Instances", Note: "every nginx on this server: scan, list, inspect, adopt"},
 	{ID: "server", Title: "SERVER", Label: "This server", Note: "check what this machine has"},
 	{ID: "tool", Title: "NGITOOL", Label: "NgiTool itself", Note: "version, update, completion, uninstall"},
 }
@@ -38,9 +41,33 @@ type MenuItem struct {
 }
 
 var menuItems = []MenuItem{
+	{Group: "routes", Label: "Add a route", Hint: "hostname → containers, services or ports; two or more make a pool", Args: []string{"route", "add"}},
+	{Group: "routes", Label: "List routes", Hint: "by instance and host, with the last probe", Args: []string{"route", "ls"}},
+	{Group: "routes", Label: "Edit a route", Hint: "the wizard again, filled in", Args: []string{"route", "edit"}},
+	{Group: "routes", Label: "Disable a route", Hint: "stop serving it, keep it in state", Args: []string{"route", "disable"}},
+	{Group: "routes", Label: "Enable a route", Hint: "serve a disabled route again", Args: []string{"route", "enable"}},
+	{Group: "routes", Label: "Remove a route", Hint: "shows what goes with it first", Args: []string{"route", "rm"}},
+	{Group: "lb", Label: "List pools", Hint: "method, members, routes", Args: []string{"pool", "ls"}},
+	{Group: "lb", Label: "Show a pool", Hint: "members with their last health check", Args: []string{"pool", "show"}},
+	{Group: "lb", Label: "Check member health", Hint: "request every member from the instance's network", Args: []string{"pool", "check"}},
+	{Group: "lb", Label: "Drain a member", Hint: "take it out of rotation for a deploy", Args: []string{"pool", "drain"}},
+	{Group: "lb", Label: "Bring a member back", Hint: "undrain", Args: []string{"pool", "undrain"}},
+	{Group: "lb", Label: "Blue/green switch", Hint: "make another set active, keep the old one as backup", Args: []string{"pool", "switch"}},
+	{Group: "lb", Label: "Add members", Hint: "from the same checklist as route add", Args: []string{"pool", "member", "add"}},
+	{Group: "lb", Label: "Remove a member", Hint: "", Args: []string{"pool", "member", "rm"}},
+	{Group: "lb", Label: "Set a weight", Hint: "more traffic to bigger members", Args: []string{"pool", "member", "weight"}},
+	{Group: "lb", Label: "Make a member a backup", Hint: "used only when the others fail", Args: []string{"pool", "member", "backup"}},
+	{Group: "lb", Label: "Remove a pool", Hint: "and the routes that use it", Args: []string{"pool", "rm"}},
+	{Group: "apply", Label: "Diff", Hint: "what apply would change, hand edits", Args: []string{"diff"}},
+	{Group: "apply", Label: "Apply", Hint: "re-render from state", Args: []string{"apply"}},
+	{Group: "apply", Label: "Roll back", Hint: "pick a snapshot", Args: []string{"rollback"}},
+	{Group: "apply", Label: "Test", Hint: "nginx -t", Args: []string{"test"}},
+	{Group: "apply", Label: "Reload", Hint: "nginx -t, then reload", Args: []string{"reload"}},
 	{Group: "instances", Label: "Scan", Hint: "find every nginx and what NgiTool may do to it", Args: []string{"scan"}},
 	{Group: "instances", Label: "List", Hint: "one line per instance", Args: []string{"instances"}},
 	{Group: "instances", Label: "Inspect", Hint: "servers, locations and targets of one instance", Args: []string{"inspect"}},
+	{Group: "instances", Label: "Adopt", Hint: "let NgiTool write to an instance", Args: []string{"instance", "adopt"}},
+	{Group: "instances", Label: "Release", Hint: "remove every NgiTool file from an instance", Args: []string{"instance", "release"}},
 	{Group: "server", Label: "Doctor", Hint: "root, docker, compose v2, ss, front door, configs, state dir, updates", Args: []string{"doctor"}},
 	{Group: "tool", Label: "Update", Hint: "install the latest release", Args: []string{"update"}},
 	{Group: "tool", Label: "Check for updates", Hint: "compare with the latest release", Args: []string{"update", "--check"}},

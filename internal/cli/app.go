@@ -13,6 +13,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/amirhosseinbanaei/NgiTool/internal/discover"
 	"github.com/amirhosseinbanaei/NgiTool/internal/paths"
 	"github.com/amirhosseinbanaei/NgiTool/internal/ui"
 )
@@ -33,7 +34,8 @@ type env struct {
 	force   bool
 	noColor bool
 	root    *cobra.Command
-	memo    scanMemo // one scan shared by everything in this run
+	memo    scanMemo         // one scan shared by everything in this run
+	fixed   *discover.Report // tests: every scan returns this
 }
 
 // ExitError ends the run with Code; Msg is printed unless empty.
@@ -126,6 +128,14 @@ var commands = []func(*env) *cobra.Command{
 	scanCmd,
 	instancesCmd,
 	inspectCmd,
+	instanceCmd,
+	routeCmd,
+	poolCmd,
+	diffCmd,
+	applyCmd,
+	rollbackCmd,
+	testCmd,
+	reloadCmd,
 	doctorCmd,
 	versionCmd,
 	updateCmd,

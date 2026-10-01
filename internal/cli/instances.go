@@ -40,6 +40,9 @@ type scanMemo struct {
 // report returns a scan no older than CacheFor, or scans now. With show
 // the steps are drawn (not for --json).
 func (e *env) report(ctx context.Context, fresh, show bool) *discover.Report {
+	if e.fixed != nil {
+		return e.fixed
+	}
 	e.memo.mu.Lock()
 	defer e.memo.mu.Unlock()
 	if e.memo.rep != nil && !fresh {
