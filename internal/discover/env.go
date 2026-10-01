@@ -27,6 +27,8 @@ type Env struct {
 	Binaries []string
 	// UserName turns a uid into a name.
 	UserName func(uid int) string
+	// Access is access(2) on a host path; nil means syscall.Access.
+	Access func(path string, mode uint32) error
 }
 
 // KnownBinaries are the usual places of nginx and its variants (DISC-02..06).
@@ -58,6 +60,7 @@ func System(roots []string) Env {
 		Now:      time.Now,
 		Binaries: KnownBinaries,
 		UserName: lookupUser,
+		Access:   syscall.Access,
 	}
 }
 
@@ -78,6 +81,14 @@ func (e Env) ownerOf(path string) string {
 		return e.UserName(int(s.Uid))
 	}
 	return ""
+}
+
+// access is Access, or the real access(2) when none is set.
+func (e Env) access(path string, mode uint32) error {
+	if e.Access != nil {
+		return e.Access(path, mode)
+	}
+	return syscall.Access(path, mode)
 }
 
 func (e Env) has(name string) bool {
