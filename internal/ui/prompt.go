@@ -265,6 +265,9 @@ type InputOpts struct {
 	Validate    func(string) error
 	Secret      bool
 	Suggestions []string // completed with tab as the prefix matches
+	// Live, when set, is shown under the field and redrawn as it is typed
+	// (what a path points at, say).
+	Live func(string) string
 }
 
 // Input asks for text, validating as it is typed.
@@ -285,7 +288,15 @@ func Input(o InputOpts) (string, error) {
 		placeholder = o.Default
 	}
 	field := huh.NewInput().Title(title(o.Title)).Prompt("› ").Placeholder(placeholder).Value(&value).Validate(validate)
-	if o.Note != "" {
+	if o.Live != nil {
+		field.DescriptionFunc(func() string {
+			live := o.Live(strings.TrimSpace(value))
+			if o.Note == "" {
+				return live
+			}
+			return o.Note + "\n" + live
+		}, &value)
+	} else if o.Note != "" {
 		field.Description(o.Note)
 	}
 	if o.Secret {
@@ -371,7 +382,7 @@ func cmpStr(a, b string) string {
 func huhOptions(opts []Option) []huh.Option[string] {
 	lw, bw := 0, 0
 	for _, o := range opts {
-		if !o.sep {
+		if !o.sep && !strings.HasPrefix(o.Label, SymPen) { // the manual row does not set the column
 			lw = max(lw, Width(o.Label))
 			bw = max(bw, Width(o.Badge))
 		}

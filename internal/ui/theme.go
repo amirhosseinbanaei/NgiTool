@@ -92,6 +92,13 @@ func Key(s string) string    { return paint(style(colKey), s) }
 func Danger(s string) string { return paint(style(colDanger).Bold(true), s) }
 func Bold(s string) string   { return paint(renderer.NewStyle().Bold(true), s) }
 
+// Series colours the i-th of several parallel things (a service's prefix
+// in compose output) with the roles in turn; plain output keeps the text.
+func Series(i int, s string) string {
+	cols := []lipgloss.TerminalColor{colAccent, colKey, colOK, colWarn}
+	return paint(style(cols[((i%len(cols))+len(cols))%len(cols)]), s)
+}
+
 // AccentBold is the title style: the tool name, a focused option.
 func AccentBold(s string) string { return paint(style(colAccent).Bold(true), s) }
 
