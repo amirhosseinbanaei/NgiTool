@@ -220,6 +220,20 @@ func checkMember(rep *discover.Report, in *discover.Instance, m Member) Problems
 		if m.Kind == KindService && len(cs) > 1 {
 			ps = append(ps, Problem{Code: "LB-04", Level: LevelNote, Msg: m.Ref + " has " + strconv.Itoa(len(cs)) + " replicas behind one name: resolve keeps all of them in the pool"})
 		}
+		if m.Host != "" {
+			proj, svc, _ := strings.Cut(m.Ref, "/")
+			if m.Kind == KindContainer {
+				proj, svc = "", m.Ref
+			}
+			for _, n := range in.Networks {
+				if others := strangers(rep, n, m.Host, proj, svc); len(others) > 0 {
+					ps = append(ps, Problem{Code: "RP-25",
+						Msg: m.Host + " also resolves to " + strings.Join(others, ", ") + " on " + n + " — nginx would send " + m.Label() + "'s traffic to them too",
+						Fix: "point the member at a name only it has: its container name, or ngitool app attach (alias <app>-<service>)"})
+					break
+				}
+			}
+		}
 		for _, c := range cs {
 			if !shares(in, c) {
 				net := joinNetwork(in)
@@ -417,9 +431,12 @@ func Gateway(rep *discover.Report, in *discover.Instance) string {
 	return ""
 }
 
-// ResolveMember fills Host for a compose-service member: the service name
-// when it resolves on a network the instance shares, else the container
-// name. Names only, never IPs (DOCK-16).
+// ResolveMember fills Host for a compose-service member: the service name,
+// or else the <project>-<service> alias, when it resolves on a network the
+// instance shares to this service alone; otherwise the container name.
+// A service name is not unique on a shared external network ("web" is every
+// project's web there), and nginx's resolve would balance across all of
+// them (RP-25). Names only, never IPs (DOCK-16).
 func ResolveMember(rep *discover.Report, in *discover.Instance, m *Member) {
 	switch m.Kind {
 	case KindContainer:
@@ -431,14 +448,12 @@ func ResolveMember(rep *discover.Report, in *discover.Instance, m *Member) {
 			return // the alias the app's override gives it (DOCK-16)
 		}
 		cs := memberContainers(rep, *m)
-		_, svc, _ := strings.Cut(m.Ref, "/")
-		for _, c := range cs {
+		proj, svc, _ := strings.Cut(m.Ref, "/")
+		for _, name := range []string{svc, proj + "-" + svc} {
 			for _, n := range in.Networks {
-				for _, dn := range c.DNS[n] {
-					if dn == svc {
-						m.Host = svc
-						return
-					}
+				if servedBy(cs, n, name) && len(strangers(rep, n, name, proj, svc)) == 0 {
+					m.Host = name
+					return
 				}
 			}
 		}
@@ -448,6 +463,37 @@ func ResolveMember(rep *discover.Report, in *discover.Instance, m *Member) {
 			m.Host = svc
 		}
 	}
+}
+
+// servedBy reports whether name resolves to one of cs on network n.
+func servedBy(cs []discover.Container, n, name string) bool {
+	for _, c := range cs {
+		for _, dn := range c.DNS[n] {
+			if dn == name {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// strangers are the running containers on network n that name resolves to
+// but that are not the service proj/svc (proj "" matches a container by
+// its name instead).
+func strangers(rep *discover.Report, n, name, proj, svc string) []string {
+	var out []string
+	for _, c := range rep.Containers {
+		if !c.Running || (proj != "" && c.Project == proj && c.Service == svc) || (proj == "" && c.Name == svc) {
+			continue
+		}
+		for _, dn := range c.DNS[n] {
+			if dn == name {
+				out = append(out, c.Name)
+				break
+			}
+		}
+	}
+	return out
 }
 
 // CheckRoute checks a route against the state (which already holds it) and

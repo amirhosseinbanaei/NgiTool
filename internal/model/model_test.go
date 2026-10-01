@@ -220,11 +220,55 @@ func TestContainerMembers(t *testing.T) {
 	}
 	svc := Member{Kind: KindService, Ref: "shop/web", Port: 3000}
 	ResolveMember(rep, front, &svc)
-	if svc.Host != "web" {
-		t.Errorf("service resolves by its service name on a shared network, got %q", svc.Host)
+	if svc.Host != "shop-web-1" {
+		t.Errorf("\"web\" also names the container web on app: fall back to the container name, got %q", svc.Host)
 	}
-	if ps := checkMember(rep, front, svc); !has(ps, "LB-04", false) {
-		t.Errorf("replicas note: %s", codes(ps))
+	shared := Member{Kind: KindService, Ref: "shop/web", Host: "web", Port: 3000}
+	if ps := checkMember(rep, front, shared); !has(ps, "RP-25", true) || !strings.Contains(ps[len(ps)-1].Msg, "also resolves to web") {
+		t.Errorf("a name other containers answer to is refused (RP-25): %+v", ps)
+	}
+	if ps := checkMember(rep, front, Member{Kind: KindContainer, Ref: "web", Host: "web", Port: 3000}); !has(ps, "RP-25", true) {
+		t.Errorf("Docker DNS answers \"web\" with the container and both replicas: %+v", ps)
+	}
+	if ps := checkMember(rep, front, Member{Kind: KindContainer, Ref: "shop-web-1", Host: "shop-web-1", Port: 3000}); has(ps, "RP-25", true) {
+		t.Errorf("a container's own name is not shared with itself: %+v", ps)
+	}
+
+	// Alone on the network, the service name keeps every replica in the pool.
+	rep.Containers = append(rep.Containers[:1], rep.Containers[2:]...)
+	svc = Member{Kind: KindService, Ref: "shop/web", Port: 3000}
+	ResolveMember(rep, front, &svc)
+	if svc.Host != "web" {
+		t.Errorf("service resolves by its service name when only it has it, got %q", svc.Host)
+	}
+	if ps := checkMember(rep, front, svc); !has(ps, "LB-04", false) || has(ps, "RP-25", true) {
+		t.Errorf("replicas note, no RP-25: %s", codes(ps))
+	}
+}
+
+// Two compose projects on one external network both answer to "web"
+// (moslehifard and voice-agent on edge): each must get a name of its own.
+func TestServiceNameSharedAcrossProjects(t *testing.T) {
+	rep := &discover.Report{
+		Containers: []discover.Container{
+			{Name: "front", Running: true, Networks: []string{"edge"}},
+			{Name: "kavan", Running: true, Project: "kavan", Service: "web", Networks: []string{"edge"},
+				DNS: map[string][]string{"edge": {"kavan", "web", "kavan-web", "f3048c0fbbed"}}},
+			{Name: "agent", Running: true, Project: "agent", Service: "web", Networks: []string{"edge"},
+				DNS: map[string][]string{"edge": {"agent", "web"}}},
+		},
+		Instances: []discover.Instance{{ID: "ctr:front", Kind: discover.KindContainer, Name: "front", Container: "front", Networks: []string{"edge"}}},
+	}
+	front := rep.Find("ctr:front")
+	for ref, want := range map[string]string{"kavan/web": "kavan-web", "agent/web": "agent"} {
+		m := Member{Kind: KindService, Ref: ref, Port: 3000}
+		ResolveMember(rep, front, &m)
+		if m.Host != want {
+			t.Errorf("%s: got %q, want %q", ref, m.Host, want)
+		}
+		if ps := checkMember(rep, front, m); has(ps, "RP-25", true) {
+			t.Errorf("%s: %+v", ref, ps)
+		}
 	}
 }
 
