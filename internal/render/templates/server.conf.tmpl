@@ -1,0 +1,35 @@
+# {{.Host}}{{if .Desc}} → {{.Desc}}{{end}}
+{{- range .Servers}}
+{{if .Note}}
+# {{.Note}}
+{{- end}}
+server {
+{{- range .Listens}}
+    listen {{.}};
+{{- end}}
+{{- if .HTTP2}}
+    http2 on;
+{{- end}}
+    server_name {{.Names}};
+{{- if .Cert}}
+
+    ssl_certificate     {{.Cert}};
+    ssl_certificate_key {{.Key}};
+{{- end}}
+{{- if .HSTS}}
+    {{.HSTS}}
+{{- end}}
+    absolute_redirect off;
+{{- if .Resolver}}
+    resolver {{.Resolver}} valid=10s ipv6=off;
+{{- end}}
+{{- range .Includes}}
+    include {{.}};
+{{- end}}
+{{- range .Extra}}
+    {{.}}
+{{- end}}
+
+{{.Body}}
+}
+{{- end}}

@@ -1,0 +1,112 @@
+=== /etc/nginx/edge/conf.d/ngitool.conf
+# Managed by NgiTool — generated from state; edit with ngitool, changes here are overwritten
+# ngitool: instance sha256:9684eebf42cec36f206c264f5d526eb2cc3dec41aecaed5375b7a622459585ee
+# edge-nginx-1: the one file its config includes; everything NgiTool serves hangs off it.
+
+include /etc/nginx/edge/ngitool/upstreams/*.conf;
+
+=== /etc/nginx/edge/ngitool/upstreams/app.conf
+# Managed by NgiTool — generated from state; edit with ngitool, changes here are overwritten
+# ngitool: pool:app sha256:a8da81d3b6c18fa6ea4d3de26859a33878f1a0b6bd27d66d9025342e3284c45f
+# pool app: web-1:3000, web-2:3000, web-3:3000 · least connections
+upstream ngt_app {
+    zone ngt_app 64k;
+    least_conn;
+    resolver 127.0.0.11 valid=10s ipv6=off;
+    server web-1:3000 resolve;
+    server web-2:3000 resolve;
+    server web-3:3000 resolve;
+}
+
+=== /etc/nginx/edge/ngitool/upstreams/hostapp.conf
+# Managed by NgiTool — generated from state; edit with ngitool, changes here are overwritten
+# ngitool: pool:hostapp sha256:c4e639922d9b017791d737ce1a4524785fec346acd960ce249a99cfd2f04afa9
+# pool hostapp: host:8081
+upstream ngt_hostapp {
+    zone ngt_hostapp 64k;
+    server 172.20.0.1:8081;
+}
+
+=== /etc/nginx/edge/sites/app.example.com.conf
+# Managed by NgiTool — generated from state; edit with ngitool, changes here are overwritten
+# ngitool: route:app.example.com sha256:70633e8c16a5c5a0792f95cd1e6a718e69704540ccb26bddf88df0ec97acff73
+# app.example.com → web-1:3000, web-2:3000, web-3:3000 · least connections
+
+server {
+    listen 443 ssl;
+    http2 on;
+    server_name app.example.com;
+
+    ssl_certificate     /etc/ssl/example.com/fullchain.pem;
+    ssl_certificate_key /etc/ssl/example.com/privkey.pem;
+    add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+    absolute_redirect off;
+    include /etc/nginx/edge/snippets/security-headers.conf;
+    include /etc/nginx/edge/locations/app.example.com/*.conf;
+
+    location / {
+        proxy_pass http://ngt_app;
+        include /etc/nginx/edge/snippets/ngitool-proxy.conf;
+        proxy_set_header Host $host;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection $connection_upgrade;
+        proxy_connect_timeout 5s;
+        proxy_read_timeout 120s;
+        proxy_send_timeout 120s;
+        proxy_next_upstream error timeout;
+        proxy_next_upstream_tries 3;
+        proxy_next_upstream_timeout 15s;
+    }
+}
+
+# Port 80 redirects to HTTPS (http: redirect).
+server {
+    listen 80;
+    server_name app.example.com;
+    absolute_redirect off;
+    include /etc/nginx/edge/snippets/acme-challenge.conf;
+
+    location / { return 301 https://$host$request_uri; }
+}
+
+=== /etc/nginx/edge/sites/tools.example.com.conf
+# Managed by NgiTool — generated from state; edit with ngitool, changes here are overwritten
+# ngitool: route:tools.example.com sha256:0a50e4455e8533b7f1e1a16702cbfd1784dc7ebebbf0aadcaf50b7d6a7735333
+# tools.example.com → host:8081
+
+server {
+    listen 80;
+    server_name tools.example.com;
+    absolute_redirect off;
+    include /etc/nginx/edge/snippets/security-headers.conf;
+    include /etc/nginx/edge/locations/tools.example.com/*.conf;
+    include /etc/nginx/edge/snippets/acme-challenge.conf;
+
+    location / {
+        proxy_pass http://ngt_hostapp;
+        include /etc/nginx/edge/snippets/ngitool-proxy.conf;
+        proxy_set_header Host $host;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection $connection_upgrade;
+        proxy_connect_timeout 5s;
+        proxy_read_timeout 120s;
+        proxy_send_timeout 120s;
+    }
+}
+
+=== /etc/nginx/edge/snippets/ngitool-proxy.conf
+# Managed by NgiTool — generated from state; edit with ngitool, changes here are overwritten
+# ngitool: snippet sha256:4f02f40b3125f4bef3ba89c19f1cd73ba11a79bae57bf195fb696d57dfc806cb
+# Included by every proxied location NgiTool writes.
+proxy_http_version 1.1;
+proxy_set_header X-Real-IP         $remote_addr;
+proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+proxy_set_header X-Forwarded-Proto $scheme;
+proxy_set_header X-Forwarded-Host  $host;
+# Room for large response headers. Next.js, Nuxt, SvelteKit and Remix send preload Link
+# headers, auth cookies and framework headers that overflow nginx's 4k default, which
+# fails the request with 502 "upstream sent too big header" (RP-09).
+proxy_buffer_size       16k;
+proxy_buffers           8 16k;
+proxy_busy_buffers_size 32k;
+

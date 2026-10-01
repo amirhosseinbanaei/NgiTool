@@ -1,0 +1,24 @@
+# {{.Instance}}: the one file its config includes; everything NgiTool serves hangs off it.
+{{- if .MapVar}}
+
+# Upgrade only when the client asks for it, "" otherwise so upstream keepalive works (LB-06, RP-08).
+map $http_upgrade ${{.MapVar}} {
+    default upgrade;
+    ''      '';
+}
+{{- end}}
+{{- if .Includes}}
+{{range .Includes}}
+include {{.}};
+{{- end}}
+{{- end}}
+{{- if .DefaultSSL}}
+
+# Unknown names on {{.SSLPort}} get no certificate at all, never another site's (RP-18).
+server {
+{{- range .SSLListens}}
+    listen {{.}};
+{{- end}}
+    ssl_reject_handshake on;
+}
+{{- end}}

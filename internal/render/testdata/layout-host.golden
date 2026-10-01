@@ -1,0 +1,108 @@
+=== /etc/nginx/conf.d/ngitool.conf
+# Managed by NgiTool — generated from state; edit with ngitool, changes here are overwritten
+# ngitool: instance sha256:72e624fb4c54a646655f6a1f69c4c1ab3b299fed3bc1b6ed2bbe73a26a92523f
+# nginx.service: the one file its config includes; everything NgiTool serves hangs off it.
+
+# Upgrade only when the client asks for it, "" otherwise so upstream keepalive works (LB-06, RP-08).
+map $http_upgrade $connection_upgrade {
+    default upgrade;
+    ''      '';
+}
+
+include /etc/nginx/ngitool/upstreams/*.conf;
+include /etc/nginx/ngitool/servers/*.conf;
+
+# Unknown names on 443 get no certificate at all, never another site's (RP-18).
+server {
+    listen 443 ssl default_server;
+    ssl_reject_handshake on;
+}
+
+=== /etc/nginx/ngitool/locations/app.example.com/sock.conf
+# Managed by NgiTool — generated from state; edit with ngitool, changes here are overwritten
+# ngitool: route:app.example.com/sock sha256:db814294c71b4ecd82e6506189f0db55ee1de4fb64aecb6f6c344e075765aeea
+location = /sock { return 301 /sock/$is_args$args; }
+
+location /sock/ {
+    proxy_pass http://ngt_sock;
+    include /etc/nginx/ngitool/proxy.conf;
+    proxy_set_header Host $host;
+    proxy_set_header Upgrade $http_upgrade;
+    proxy_set_header Connection $connection_upgrade;
+    proxy_set_header X-Forwarded-Prefix /sock;
+    proxy_connect_timeout 5s;
+    proxy_read_timeout 120s;
+    proxy_send_timeout 120s;
+}
+
+=== /etc/nginx/ngitool/proxy.conf
+# Managed by NgiTool — generated from state; edit with ngitool, changes here are overwritten
+# ngitool: snippet sha256:4f02f40b3125f4bef3ba89c19f1cd73ba11a79bae57bf195fb696d57dfc806cb
+# Included by every proxied location NgiTool writes.
+proxy_http_version 1.1;
+proxy_set_header X-Real-IP         $remote_addr;
+proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+proxy_set_header X-Forwarded-Proto $scheme;
+proxy_set_header X-Forwarded-Host  $host;
+# Room for large response headers. Next.js, Nuxt, SvelteKit and Remix send preload Link
+# headers, auth cookies and framework headers that overflow nginx's 4k default, which
+# fails the request with 502 "upstream sent too big header" (RP-09).
+proxy_buffer_size       16k;
+proxy_buffers           8 16k;
+proxy_busy_buffers_size 32k;
+
+=== /etc/nginx/ngitool/servers/app.example.com.conf
+# Managed by NgiTool — generated from state; edit with ngitool, changes here are overwritten
+# ngitool: route:app.example.com sha256:b9d7dee10400fcf94d917c97b1001a108f6e50cacf4a8352bf1457953cf83fd5
+# app.example.com → host:3000
+
+server {
+    listen 443 ssl;
+    http2 on;
+    server_name app.example.com;
+
+    ssl_certificate     /etc/ssl/example.com/fullchain.pem;
+    ssl_certificate_key /etc/ssl/example.com/privkey.pem;
+    add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+    absolute_redirect off;
+    include /etc/nginx/ngitool/locations/app.example.com/*.conf;
+
+    location / {
+        proxy_pass http://ngt_app;
+        include /etc/nginx/ngitool/proxy.conf;
+        proxy_set_header Host $host;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection $connection_upgrade;
+        proxy_connect_timeout 5s;
+        proxy_read_timeout 120s;
+        proxy_send_timeout 120s;
+    }
+}
+
+# Port 80 redirects to HTTPS (http: redirect).
+server {
+    listen 80;
+    server_name app.example.com;
+    absolute_redirect off;
+
+    location / { return 301 https://$host$request_uri; }
+}
+
+=== /etc/nginx/ngitool/upstreams/app.conf
+# Managed by NgiTool — generated from state; edit with ngitool, changes here are overwritten
+# ngitool: pool:app sha256:aeba66060db7bae72ac6e0969e331a8877ce9caf75755725d65305026b6711f2
+# pool app: host:3000
+upstream ngt_app {
+    zone ngt_app 64k;
+    server 127.0.0.1:3000;
+}
+
+=== /etc/nginx/ngitool/upstreams/sock.conf
+# Managed by NgiTool — generated from state; edit with ngitool, changes here are overwritten
+# ngitool: pool:sock sha256:fd72a650092789d70dc999ec8ae613d6a88567f7a2f785373e875802bcfd7375
+# pool sock: unix:/run/app.sock
+upstream ngt_sock {
+    zone ngt_sock 64k;
+    server unix:/run/app.sock;
+}
+

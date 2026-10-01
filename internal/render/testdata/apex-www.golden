@@ -1,0 +1,83 @@
+=== /etc/nginx/conf.d/ngitool.conf
+# Managed by NgiTool — generated from state; edit with ngitool, changes here are overwritten
+# ngitool: instance sha256:ad840bd9b63062a484705259b66337dc5826dc7bb76e9ac2221e177d91a8cc38
+# front: the one file its config includes; everything NgiTool serves hangs off it.
+
+# Upgrade only when the client asks for it, "" otherwise so upstream keepalive works (LB-06, RP-08).
+map $http_upgrade $connection_upgrade {
+    default upgrade;
+    ''      '';
+}
+
+include /etc/nginx/conf.d/ngitool/upstreams/*.conf;
+include /etc/nginx/conf.d/ngitool/servers/*.conf;
+
+# Unknown names on 443 get no certificate at all, never another site's (RP-18).
+server {
+    listen 443 ssl default_server;
+    ssl_reject_handshake on;
+}
+
+=== /etc/nginx/conf.d/ngitool/proxy.conf
+# Managed by NgiTool — generated from state; edit with ngitool, changes here are overwritten
+# ngitool: snippet sha256:4f02f40b3125f4bef3ba89c19f1cd73ba11a79bae57bf195fb696d57dfc806cb
+# Included by every proxied location NgiTool writes.
+proxy_http_version 1.1;
+proxy_set_header X-Real-IP         $remote_addr;
+proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+proxy_set_header X-Forwarded-Proto $scheme;
+proxy_set_header X-Forwarded-Host  $host;
+# Room for large response headers. Next.js, Nuxt, SvelteKit and Remix send preload Link
+# headers, auth cookies and framework headers that overflow nginx's 4k default, which
+# fails the request with 502 "upstream sent too big header" (RP-09).
+proxy_buffer_size       16k;
+proxy_buffers           8 16k;
+proxy_busy_buffers_size 32k;
+
+=== /etc/nginx/conf.d/ngitool/servers/example.com.conf
+# Managed by NgiTool — generated from state; edit with ngitool, changes here are overwritten
+# ngitool: route:example.com sha256:328e213acc3f11f09e39d42fcdb246c8221e96b58d7082b06e9d542ebca14adc
+# example.com → web-1:3000
+
+server {
+    listen 443 ssl;
+    http2 on;
+    server_name example.com www.example.com;
+
+    ssl_certificate     /etc/ssl/example.com/fullchain.pem;
+    ssl_certificate_key /etc/ssl/example.com/privkey.pem;
+    add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+    absolute_redirect off;
+    include /etc/nginx/conf.d/ngitool/locations/example.com/*.conf;
+
+    location / {
+        proxy_pass http://ngt_site;
+        include /etc/nginx/conf.d/ngitool/proxy.conf;
+        proxy_set_header Host $host;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection $connection_upgrade;
+        proxy_connect_timeout 5s;
+        proxy_read_timeout 120s;
+        proxy_send_timeout 120s;
+    }
+}
+
+# Port 80 redirects to HTTPS (http: redirect).
+server {
+    listen 80;
+    server_name example.com www.example.com;
+    absolute_redirect off;
+
+    location / { return 301 https://$host$request_uri; }
+}
+
+=== /etc/nginx/conf.d/ngitool/upstreams/site.conf
+# Managed by NgiTool — generated from state; edit with ngitool, changes here are overwritten
+# ngitool: pool:site sha256:1906f9e75062bbcd23df1c95c5304284437b8f88ed7c7cb82dfa091875436292
+# pool site: web-1:3000
+upstream ngt_site {
+    zone ngt_site 64k;
+    resolver 127.0.0.11 valid=10s ipv6=off;
+    server web-1:3000 resolve;
+}
+
